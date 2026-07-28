@@ -1,0 +1,27 @@
+# Secrets: live only on the Android phone
+.env
+.env.*
+!.env.example
+
+# Runtime state and local databases
+data/
+*.db
+*.db-shm
+*.db-wal
+logs/
+
+# Python and Termux environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local imports and Telegram exports
+imports/
+result.json
+ChatExport_*/
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
