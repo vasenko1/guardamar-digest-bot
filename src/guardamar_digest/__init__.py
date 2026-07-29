@@ -1,0 +1,1 @@
+"""Guardamar monthly digest."""
