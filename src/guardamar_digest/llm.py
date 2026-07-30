@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import random
 import re
+import time
 from http.client import IncompleteRead
 from json import JSONDecodeError
 from urllib.error import HTTPError
@@ -11,11 +13,38 @@ from urllib.request import Request, urlopen
 from .config import Settings
 from .db import connect
 
+_last_request_at = 0.0
+MIN_REQUEST_INTERVAL = 2.0
+MAX_RETRIES = 4
+
 
 def _post(url: str, headers: dict[str, str], body: dict) -> dict:
+    """Paced REST call with bounded retries for free-provider transient errors."""
+    global _last_request_at
     request = Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
-    with urlopen(request, timeout=90) as response:  # nosec: API URL is configured internally
-        return json.loads(response.read())
+    for attempt in range(MAX_RETRIES + 1):
+        pause = MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_at)
+        if pause > 0:
+            time.sleep(pause)
+        try:
+            _last_request_at = time.monotonic()
+            with urlopen(request, timeout=90) as response:  # nosec: API URL is configured internally
+                return json.loads(response.read())
+        except HTTPError as exc:
+            retryable = exc.code in {408, 429} or 500 <= exc.code < 600
+            if not retryable or attempt == MAX_RETRIES:
+                raise
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            try:
+                delay = min(float(retry_after), 60.0) if retry_after else min(2 ** (attempt + 1), 30.0)
+            except ValueError:
+                delay = min(2 ** (attempt + 1), 30.0)
+        except (IncompleteRead, URLError, TimeoutError, OSError):
+            if attempt == MAX_RETRIES:
+                raise
+            delay = min(2 ** (attempt + 1), 30.0)
+        time.sleep(delay + random.uniform(0, 0.8))
+    raise RuntimeError("unreachable")
 
 
 def _json(text: str) -> dict:

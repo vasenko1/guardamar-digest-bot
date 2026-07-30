@@ -184,13 +184,13 @@ def _review_prompt(pairs: list[tuple[object, object]]) -> str:
 Пары:\n""" + json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
-def _ask_provider(settings, content: str, provider: str) -> dict:
+def _ask_provider(settings, content: str, provider: str, max_tokens: int) -> dict:
     if provider == "gemini" and settings.gemini_key:
         raw = _post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_key}",
             {"Content-Type": "application/json"},
             {"contents": [{"parts": [{"text": content}]}],
-             "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 4096}},
+             "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": max_tokens}},
         )
         return _json(raw["candidates"][0]["content"]["parts"][0]["text"])
     if provider == "openrouter" and settings.openrouter_key:
@@ -198,7 +198,7 @@ def _ask_provider(settings, content: str, provider: str) -> dict:
             "https://openrouter.ai/api/v1/chat/completions",
             {"Content-Type": "application/json", "Authorization": f"Bearer {settings.openrouter_key}"},
             {"model": settings.openrouter_model, "messages": [{"role": "user", "content": content}],
-             "response_format": {"type": "json_object"}, "max_tokens": 4096},
+             "response_format": {"type": "json_object"}, "max_tokens": max_tokens},
         )
         return _json(raw["choices"][0]["message"]["content"])
     raise ValueError(f"{provider} API key is not configured")
@@ -250,7 +250,7 @@ def discover_topics(settings, period: str) -> tuple[int, int]:
             errors: list[str] = []
             for provider in ("gemini", "openrouter"):
                 try:
-                    result = _ask_provider(settings, _topic_prompt(window), provider)
+                    result = _ask_provider(settings, _topic_prompt(window), provider, 1024)
                     items = result.get("items", [])
                     returned = {item.get("id") for item in items if isinstance(item, dict)}
                     if returned != expected:
@@ -331,7 +331,7 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
         errors: list[str] = []
         for provider in ("gemini", "openrouter"):
             try:
-                result = _ask_provider(settings, _review_prompt(batch), provider)
+                result = _ask_provider(settings, _review_prompt(batch), provider, 768)
                 returned = result.get("decisions", [])
                 keys = {(item.get("left"), item.get("right")) for item in returned if isinstance(item, dict)}
                 if keys != expected:
