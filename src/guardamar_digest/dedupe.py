@@ -313,3 +313,52 @@ def review_report(db_path, period: str) -> str:
             f"B: {right}\n   {row['right_url']}",
         ))
     return "\n".join(output)
+
+
+def _refresh_review_flags(con, period: str) -> None:
+    con.execute(
+        """UPDATE entries SET needs_duplicate_review=CASE WHEN EXISTS (
+              SELECT 1 FROM duplicate_reviews d
+              WHERE d.period_key=entries.period_key AND d.status='pending'
+                AND (d.left_message_id=entries.message_id OR d.right_message_id=entries.message_id)
+            ) THEN 1 ELSE 0 END
+            WHERE period_key=? AND excluded_reason IS NULL""",
+        (period,),
+    )
+
+
+def decide_pairs(db_path, period: str, pairs: list[tuple[int, int]], same: bool) -> int:
+    """Apply an editor's explicit decision using visible Telegram message IDs."""
+    applied = 0
+    with connect(db_path) as con:
+        for left_external, right_external in pairs:
+            row = con.execute(
+                """SELECT d.left_message_id, d.right_message_id, l.published_at AS left_at,
+                          l.message_id AS left_external, r.published_at AS right_at,
+                          r.message_id AS right_external
+                   FROM duplicate_reviews d JOIN messages l ON l.id=d.left_message_id
+                   JOIN messages r ON r.id=d.right_message_id
+                   WHERE d.period_key=? AND ((l.message_id=? AND r.message_id=?)
+                     OR (l.message_id=? AND r.message_id=?))""",
+                (period, left_external, right_external, right_external, left_external),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"pair {left_external}:{right_external} is not in the review queue")
+            con.execute(
+                """UPDATE duplicate_reviews SET status=?, confidence='editor', provider='manual'
+                   WHERE period_key=? AND left_message_id=? AND right_message_id=?""",
+                ("same" if same else "different", period, row["left_message_id"], row["right_message_id"]),
+            )
+            if same:
+                left_is_latest = (row["left_at"], row["left_external"]) > (row["right_at"], row["right_external"])
+                keeper = row["left_message_id"] if left_is_latest else row["right_message_id"]
+                duplicate = row["right_message_id"] if left_is_latest else row["left_message_id"]
+                con.execute(
+                    """UPDATE entries SET eligible=0, excluded_reason='duplicate', duplicate_of=?,
+                       dedupe_reason='semantic same author (editor)', dedupe_confidence=1.0,
+                       dedupe_version=?, needs_duplicate_review=0 WHERE message_id=?""",
+                    (keeper, VERSION, duplicate),
+                )
+            applied += 1
+        _refresh_review_flags(con, period)
+    return applied
