@@ -12,7 +12,7 @@ from .db import connect
 from .llm import _json, _post
 
 
-VERSION = "2026-07-30.3"
+VERSION = "2026-07-30.4"
 _blocked_providers: set[str] = set()
 
 
@@ -89,17 +89,13 @@ def dedupe(db_path, period: str) -> dict[str, int]:
         )
         # Re-running is idempotent. Manual editorial exclusions are never touched.
         con.execute(
-            """UPDATE entries SET excluded_reason=NULL, duplicate_of=NULL,
+            """UPDATE entries SET
+               eligible=CASE WHEN excluded_reason='duplicate' THEN 1 ELSE eligible END,
+               excluded_reason=CASE WHEN excluded_reason='duplicate' THEN NULL ELSE excluded_reason END,
+               duplicate_of=NULL,
                dedupe_reason=NULL, dedupe_confidence=NULL, dedupe_version=NULL,
                needs_duplicate_review=0
                WHERE period_key=? AND dedupe_version IS NOT NULL""",
-            (period,),
-        )
-        con.execute(
-            """UPDATE entries SET eligible=1, category_code=NULL, category_title=NULL,
-               category_emoji=NULL, short_title=NULL, confidence=NULL, provider=NULL,
-               classification_run_id=NULL
-               WHERE period_key=? AND manual_title IS NULL AND excluded_reason IS NULL""",
             (period,),
         )
         # A changed arbitration algorithm must reconsider automatic decisions.

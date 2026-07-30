@@ -12,6 +12,12 @@ from guardamar_digest.dedupe import VERSION as DEDUPE_VERSION
 from guardamar_digest.dedupe import _date_features, _route_features
 from guardamar_digest.dedupe import dedupe, semantic_dedupe
 from guardamar_digest.importer import import_export
+from guardamar_digest.llm import (
+    _validate_showcase_title,
+    classify,
+    classification_signature,
+    prepare_rows,
+)
 from guardamar_digest.prefilter import prefilter
 from guardamar_digest.publisher import publish_parts
 from guardamar_digest.render import render
@@ -41,6 +47,17 @@ def add_message(con, external_id: int, text: str, sender: str = "author",
         (cursor.lastrowid,),
     )
     return cursor.lastrowid
+
+
+def current_classification_signature(con, period: str) -> str:
+    records = con.execute(
+        """SELECT m.id,m.source_text FROM messages m JOIN entries e ON e.message_id=m.id
+           WHERE e.period_key=? AND e.manual_title IS NULL
+             AND e.excluded_reason IS NULL AND e.needs_duplicate_review=0
+           ORDER BY m.message_id""",
+        (period,),
+    ).fetchall()
+    return classification_signature(prepare_rows(records)) if records else ""
 
 
 class PipelineTest(unittest.TestCase):
@@ -83,6 +100,28 @@ class PipelineTest(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual((kept["eligible"], kept["excluded_reason"]), (1, None))
         self.assertEqual(audits, 4)
+
+    def test_last_day_event_expires_after_month_but_cross_month_range_stays(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            last_day = add_message(con, 5, "Игра Мафия 31.07")
+            crossing = add_message(con, 6, "Лагерь с 31.07 по 02.08")
+        prefilter(settings, "2026-07", "2026-08-01")
+        with connect(self.db) as con:
+            rows = {
+                row["message_id"]: row
+                for row in con.execute(
+                    "SELECT message_id,eligible,excluded_reason FROM entries"
+                )
+            }
+        self.assertEqual(
+            (rows[last_day]["eligible"], rows[last_day]["excluded_reason"]),
+            (0, "expired"),
+        )
+        self.assertEqual(
+            (rows[crossing]["eligible"], rows[crossing]["excluded_reason"]),
+            (1, None),
+        )
 
     def test_semantic_failure_has_deterministic_zero_unresolved_fallback(self):
         settings = make_settings(self.db)
@@ -143,7 +182,7 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(rows[first]["duplicate_of"], final)
         self.assertEqual(rows[second]["duplicate_of"], final)
 
-    def test_dedupe_invalidates_classification_and_old_automatic_decision(self):
+    def test_dedupe_preserves_resumable_classification_but_reopens_old_decision(self):
         with connect(self.db) as con:
             left = add_message(con, 12, "Аренда авто в Аликанте от владельца")
             right = add_message(con, 13, "Аренда авто в Аликанте напрямую от владельца")
@@ -153,6 +192,7 @@ class PipelineTest(unittest.TestCase):
             )
         dedupe(self.db, "2026-07")
         with connect(self.db) as con:
+            signature = current_classification_signature(con, "2026-07")
             con.execute(
                 """UPDATE duplicate_reviews SET status='same',confidence='high',
                    provider='gemini',rule_version='old-version'
@@ -167,9 +207,28 @@ class PipelineTest(unittest.TestCase):
             status = con.execute(
                 "SELECT status FROM duplicate_reviews WHERE period_key='2026-07'"
             ).fetchone()["status"]
-        self.assertTrue(all(row["short_title"] is None for row in entries))
-        self.assertTrue(all(row["classification_run_id"] is None for row in entries))
+        self.assertTrue(all(row["short_title"] == "Старый заголовок" for row in entries))
+        self.assertTrue(all(row["classification_run_id"] == "old-run" for row in entries))
         self.assertEqual(status, "pending")
+
+    def test_dedupe_does_not_reinclude_llm_rejected_candidate(self):
+        with connect(self.db) as con:
+            left = add_message(con, 46, "Аренда авто в Аликанте от владельца")
+            add_message(con, 47, "Аренда авто в Аликанте напрямую от владельца")
+        dedupe(self.db, "2026-07")
+        with connect(self.db) as con:
+            con.execute(
+                """UPDATE entries SET eligible=0,short_title='Не объявление',
+                   classification_run_id='run' WHERE message_id=?""",
+                (left,),
+            )
+        dedupe(self.db, "2026-07")
+        with connect(self.db) as con:
+            row = con.execute(
+                "SELECT eligible,classification_run_id FROM entries WHERE message_id=?",
+                (left,),
+            ).fetchone()
+        self.assertEqual((row["eligible"], row["classification_run_id"]), (0, "run"))
 
     def test_manual_duplicate_decision_survives_rule_upgrade(self):
         with connect(self.db) as con:
@@ -238,6 +297,28 @@ class PipelineTest(unittest.TestCase):
             (entry["eligible"], entry["excluded_reason"], entry["dedupe_reason"]),
             (0, "missing from latest export", "import reconciliation"),
         )
+
+    def test_import_uses_madrid_timezone_at_month_boundary(self):
+        export = Path(self.tmp.name) / "timezone.json"
+        common = {
+            "type": "message", "from": "Автор", "from_id": "author",
+        }
+        export.write_text(json.dumps({"messages": [
+            {**common, "id": 44, "date": "2026-06-30T22:30:00Z",
+             "text": "Продам стол"},
+            {**common, "id": 45, "date": "2026-07-31T22:30:00+00:00",
+             "text": "Продам шкаф"},
+        ]}), encoding="utf-8")
+        imported = import_export(
+            self.db, export, "2026-07", "-1001", "MarketGuardamar"
+        )
+        self.assertEqual(imported, 1)
+        with connect(self.db) as con:
+            row = con.execute(
+                "SELECT message_id,published_at FROM messages"
+            ).fetchone()
+        self.assertEqual(row["message_id"], 44)
+        self.assertEqual(row["published_at"], "2026-07-01T00:30:00")
 
     def test_render_blocks_null_classification_run_id(self):
         settings = make_settings(self.db)
@@ -312,6 +393,7 @@ class PipelineTest(unittest.TestCase):
         with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)):
             semantic_dedupe(settings, "2026-07")
         with connect(self.db) as con:
+            signature = current_classification_signature(con, "2026-07")
             con.execute(
                 """UPDATE entries SET category_code='education',
                    category_title='Обучение',category_emoji='📚',
@@ -321,7 +403,8 @@ class PipelineTest(unittest.TestCase):
             con.execute(
                 """INSERT INTO classification_runs
                    (period_key,run_id,input_signature,categories_json,status)
-                   VALUES ('2026-07','run','sig','[]','complete')"""
+                   VALUES ('2026-07','run',?,'[]','complete')""",
+                (signature,),
             )
         part = (
             '📚 <b>обЪявления Гуардамар</b>\n\n'
@@ -329,6 +412,130 @@ class PipelineTest(unittest.TestCase):
             '• Занятия по шахматам <a href="https://t.me/MarketGuardamar/30">↗</a>'
         )
         self.assertTrue(validate_period(settings, "2026-07", [part]).ok)
+
+    def test_validator_rejects_changed_text_with_old_classification_run(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            message_id = add_message(con, 36, "Уроки шахмат")
+        prefilter(settings, "2026-07")
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)):
+            semantic_dedupe(settings, "2026-07")
+        with connect(self.db) as con:
+            signature = current_classification_signature(con, "2026-07")
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='education',
+                   category_title='Обучение',category_emoji='📚',
+                   short_title='Уроки шахмат',classification_run_id='run'
+                   WHERE message_id=?""", (message_id,)
+            )
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run',?,'[]','complete')""",
+                (signature,),
+            )
+            con.execute(
+                "UPDATE messages SET source_text='Уроки испанского' WHERE id=?",
+                (message_id,),
+            )
+        result = validate_period(settings, "2026-07")
+        self.assertTrue(any("signature is stale" in error for error in result.errors))
+
+    def test_validator_rejects_stale_prefilter_date(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            add_message(con, 31, "Предлагаю занятия по шахматам")
+        prefilter(settings, "2026-07", "2026-07-01")
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)):
+            semantic_dedupe(settings, "2026-07")
+        result = validate_period(settings, "2026-07")
+        self.assertTrue(any("publication date" in error for error in result.errors))
+
+    def test_classification_requires_completed_preparation(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            add_message(con, 32, "Предлагаю занятия по шахматам")
+        with self.assertRaisesRegex(RuntimeError, "must complete before classification"):
+            classify(settings, "2026-07")
+
+    def test_validator_reports_missing_prefilter_instead_of_crashing(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            add_message(con, 37, "Предлагаю занятия по шахматам")
+        result = validate_period(settings, "2026-07")
+        self.assertFalse(result.ok)
+        self.assertTrue(any("prefilter" in error for error in result.errors))
+
+    def test_showcase_title_allows_brand_but_rejects_ukrainian_prose(self):
+        self.assertEqual(_validate_showcase_title("BMW 520 TD"), "BMW 520 TD")
+        with self.assertRaisesRegex(ValueError, "not normalized to Russian"):
+            _validate_showcase_title("Заняття для дітей")
+
+    def test_classification_rejects_string_false_from_model(self):
+        base = make_settings(self.db)
+        settings = Settings(
+            base.root, base.db_path, base.source_username, base.source_chat_id,
+            "", "", "gemini-key", "test-model", "", "test", base.excluded_sender_ids,
+        )
+        with connect(self.db) as con:
+            add_message(con, 33, "Предлагаю занятия по шахматам")
+        prefilter(settings, "2026-07")
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)):
+            semantic_dedupe(settings, "2026-07")
+        responses = [
+            {"candidates": [{"content": {"parts": [{"text":
+                '{"categories":[{"code":"education","title":"Обучение","emoji":"📚"}]}'
+            }]}}]},
+            {"candidates": [{"content": {"parts": [{"text":
+                '{"entries":[{"id":1,"include":"false","category":"education",'
+                '"title":"Занятия по шахматам","confidence":"high"}]}'
+            }]}}]},
+        ]
+        with patch("guardamar_digest.llm._post", side_effect=responses):
+            with self.assertRaisesRegex(RuntimeError, "non-boolean include"):
+                classify(settings, "2026-07")
+        with connect(self.db) as con:
+            status = con.execute(
+                "SELECT status FROM classification_runs WHERE period_key='2026-07'"
+            ).fetchone()["status"]
+        self.assertEqual(status, "running")
+
+    def test_render_uses_plan_order_russian_month_and_linked_footer(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            goods = add_message(con, 34, "Продам стул")
+            services = add_message(con, 35, "Предлагаю массаж")
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='goods',
+                   category_title='Товары',category_emoji='🛍',
+                   short_title='Стул IKEA',classification_run_id='run'
+                   WHERE message_id=?""", (goods,)
+            )
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='services',
+                   category_title='Услуги',category_emoji='🛠',
+                   short_title='Лечебный массаж',classification_run_id='run'
+                   WHERE message_id=?""", (services,)
+            )
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run','sig',?,'complete')""",
+                (json.dumps([
+                    {"code": "services", "title": "Услуги", "emoji": "🛠"},
+                    {"code": "goods", "title": "Товары", "emoji": "🛍"},
+                ], ensure_ascii=False),)
+            )
+        output = "\n".join(render(settings, "2026-07"))
+        self.assertLess(output.index("Услуги"), output.index("Товары"))
+        self.assertIn("Июль 2026", output)
+        self.assertIn(
+            '<a href="https://t.me/MarketGuardamar">обЪявления Гуардамар</a>',
+            output,
+        )
 
 
 if __name__ == "__main__":

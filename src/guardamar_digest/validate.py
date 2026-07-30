@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
 from .db import connect
 from .dedupe import VERSION as DEDUPE_VERSION
-from .prefilter import VERSION as PREFILTER_VERSION
+from .prefilter import VERSION as PREFILTER_VERSION, _period_cutoff
 from .render import telegram_length
+from .llm import classification_signature, prepare_rows
 
 
 PHONE = re.compile(r"\+?\d[\d ()-]{7,}")
@@ -18,6 +20,8 @@ GENERIC = re.compile(
     r"возможно торг|рекомендация услуг)\W*$", re.I
 )
 UKRAINIAN_ONLY = re.compile(r"[іїєґ]", re.I)
+TELEGRAM_USERNAME = re.compile(r"^[A-Za-z0-9_]{5,}$")
+RUSSIAN_LETTER = re.compile(r"[а-яё]", re.I)
 
 
 class _StrictTelegramHTML(HTMLParser):
@@ -64,15 +68,31 @@ class ValidationResult:
 
 def validate_period(settings, period: str, rendered_parts: list[str] | None = None) -> ValidationResult:
     errors: list[str] = []
+    if not TELEGRAM_USERNAME.fullmatch(settings.source_username):
+        errors.append("TELEGRAM_SOURCE_USERNAME is missing or invalid")
     with connect(settings.db_path) as con:
         run = con.execute(
-            "SELECT run_id,status FROM classification_runs WHERE period_key=?", (period,)
+            """SELECT run_id,status,input_signature FROM classification_runs
+               WHERE period_key=?""", (period,)
         ).fetchone()
         if not run or run["status"] != "complete":
             errors.append("classification run is not complete")
             run_id = ""
         else:
             run_id = run["run_id"]
+        signature_records = con.execute(
+            """SELECT m.id,m.source_text FROM messages m
+               JOIN entries e ON e.message_id=m.id
+               WHERE e.period_key=? AND e.manual_title IS NULL
+                 AND e.excluded_reason IS NULL AND e.needs_duplicate_review=0
+               ORDER BY m.message_id""",
+            (period,),
+        ).fetchall()
+        current_signature = classification_signature(
+            prepare_rows(signature_records)
+        ) if signature_records else ""
+        if run and run["input_signature"] != current_signature:
+            errors.append("classification input signature is stale")
         total_entries = con.execute(
             "SELECT COUNT(*) FROM entries WHERE period_key=?", (period,)
         ).fetchone()[0]
@@ -84,6 +104,26 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
         if audited_entries != total_entries:
             errors.append(
                 f"current prefilter did not audit every entry ({audited_entries}/{total_entries})"
+            )
+        prefilter_run = con.execute(
+            """SELECT status,rule_version,details FROM workflow_runs
+               WHERE period_key=? AND stage='prefilter'""", (period,)
+        ).fetchone()
+        expected_cutoff = _period_cutoff(period, None).isoformat()
+        try:
+            recorded_cutoff = (
+                json.loads(prefilter_run["details"] or "{}").get("as_of")
+                if prefilter_run else None
+            )
+        except (TypeError, AttributeError, json.JSONDecodeError):
+            recorded_cutoff = None
+        if (
+            not prefilter_run or prefilter_run["status"] != "complete"
+            or prefilter_run["rule_version"] != PREFILTER_VERSION
+            or recorded_cutoff != expected_cutoff
+        ):
+            errors.append(
+                f"current prefilter was not completed for publication date {expected_cutoff}"
             )
         dedupe_run = con.execute(
             """SELECT status,rule_version FROM workflow_runs
@@ -117,6 +157,22 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
             errors.append(
                 f"{broken_canonicals} duplicates point to a missing or excluded canonical entry"
             )
+        configured_author_misses = 0
+        if settings.excluded_sender_ids:
+            marks = ",".join("?" for _ in settings.excluded_sender_ids)
+            configured_author_misses = con.execute(
+                f"""SELECT COUNT(*) FROM messages m JOIN entries e ON e.message_id=m.id
+                    WHERE e.period_key=? AND m.sender_id IN ({marks})
+                      AND NOT (
+                        e.excluded_reason='author'
+                        AND e.dedupe_reason='prefilter:author'
+                      )""",
+                (period, *settings.excluded_sender_ids),
+            ).fetchone()[0]
+        if configured_author_misses:
+            errors.append(
+                f"{configured_author_misses} configured excluded-author messages were not prefiltered"
+            )
         missing = con.execute(
             """SELECT COUNT(*) FROM entries
                WHERE period_key=? AND excluded_reason IS NULL
@@ -145,6 +201,8 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
             continue
         if not category or not row["category_code"]:
             errors.append(f"message {external_id}: missing category")
+        elif not RUSSIAN_LETTER.search(category) or UKRAINIAN_ONLY.search(category):
+            errors.append(f"message {external_id}: category title is not Russian")
         if PHONE.search(title) or CONTACT.search(title):
             errors.append(f"message {external_id}: contact or URL leaked into title")
         if PRICE.search(title):
@@ -155,7 +213,8 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
             errors.append(f"message {external_id}: showcase title is not normalized to Russian")
         if row["sender_id"] in settings.excluded_sender_ids:
             errors.append(f"message {external_id}: excluded author reached publication")
-        if not row["source_url"].startswith(expected_prefix):
+        expected_url = f"{expected_prefix}{external_id}"
+        if row["source_url"] != expected_url:
             errors.append(f"message {external_id}: invalid source URL")
         if row["source_url"] in seen_urls:
             errors.append(f"message {external_id}: duplicate source URL")

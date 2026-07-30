@@ -8,6 +8,8 @@ from typing import Iterator
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY,
   chat_id TEXT NOT NULL,

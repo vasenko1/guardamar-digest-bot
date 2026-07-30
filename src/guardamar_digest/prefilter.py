@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import calendar
+import json
 import re
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from .db import connect
 
 
-VERSION = "2026-07-30.2"
+VERSION = "2026-07-30.4"
 GENERIC_ONLY = re.compile(
     r"^(?:прода[её]тся|продам|торг|возможен торг|возможно торг|"
     r"актуально|срочно|подробности в личк[еу]|пишите в личк[еу])[\s.!?,…-]*$",
@@ -35,11 +35,9 @@ MONTHS = {
 def _period_cutoff(period: str, as_of: str | None) -> date:
     if as_of:
         return date.fromisoformat(as_of)
-    year, month = map(int, period.split("-"))
-    today = datetime.now(ZoneInfo("Europe/Madrid")).date()
-    if (year, month) == (today.year, today.month):
-        return today
-    return date(year, month, calendar.monthrange(year, month)[1])
+    # Expiration is relative to the actual preparation/publication day, not to
+    # the formal end of a historical month.
+    return datetime.now(ZoneInfo("Europe/Madrid")).date()
 
 
 def _explicit_dates(text: str, period: str) -> list[date]:
@@ -107,7 +105,7 @@ def prefilter(settings, period: str, as_of: str | None = None) -> dict[str, int]
             code = detail = ""
             if row["sender_id"] in settings.excluded_sender_ids:
                 code, detail = "author", f"sender_id={row['sender_id']}"
-            elif GENERIC_ONLY.fullmatch(text) or len(SUBJECT_WORD.findall(text)) < 2:
+            elif GENERIC_ONLY.fullmatch(text) or not SUBJECT_WORD.search(text):
                 code, detail = "incomplete", "no identifiable product, service or request"
             else:
                 dates = _explicit_dates(text, period)
@@ -139,6 +137,12 @@ def prefilter(settings, period: str, as_of: str | None = None) -> dict[str, int]
                        "no high-confidence exclusion rule matched")
         # Any changed eligibility can alter duplicate clusters. A fresh
         # semantic stage is mandatory before publication.
+        con.execute(
+            """INSERT OR REPLACE INTO workflow_runs
+               (period_key,stage,rule_version,status,details,completed_at)
+               VALUES (?,'prefilter',?,'complete',?,CURRENT_TIMESTAMP)""",
+            (period, VERSION, json.dumps({"as_of": cutoff.isoformat()})),
+        )
         con.execute(
             """INSERT OR REPLACE INTO workflow_runs
                (period_key,stage,rule_version,status,details,completed_at)

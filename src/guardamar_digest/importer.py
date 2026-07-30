@@ -4,8 +4,12 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
 from .db import connect
+
+
+MADRID = ZoneInfo("Europe/Madrid")
 
 
 def plain_text(value: Any) -> str:
@@ -44,9 +48,16 @@ def import_export(db_path: Path, export_path: Path, period: str, chat_id: str, u
             if item.get("type") != "message" or not isinstance(item.get("id"), int):
                 continue
             try:
-                published = datetime.fromisoformat(item["date"])
+                raw_date = item["date"]
+                if not isinstance(raw_date, str):
+                    continue
+                if raw_date.endswith("Z"):
+                    raw_date = raw_date[:-1] + "+00:00"
+                published = datetime.fromisoformat(raw_date)
             except (KeyError, ValueError):
                 continue
+            if published.tzinfo is not None:
+                published = published.astimezone(MADRID).replace(tzinfo=None)
             if not start <= published < end:
                 continue
             text = plain_text(item.get("text")).strip()
@@ -61,7 +72,7 @@ def import_export(db_path: Path, export_path: Path, period: str, chat_id: str, u
                   sender_id=excluded.sender_id, source_text=excluded.source_text,
                   source_url=excluded.source_url, media_type=excluded.media_type,
                   media_group_id=excluded.media_group_id""",
-                (chat_id, item["id"], item["date"], item.get("from", ""), item.get("from_id", ""), text,
+                (chat_id, item["id"], published.isoformat(), item.get("from", ""), item.get("from_id", ""), text,
                  source_url(username, item["id"]), item.get("media_type"), item.get("media_group_id")),
             )
             row = con.execute("SELECT id FROM messages WHERE chat_id=? AND message_id=?", (chat_id, item["id"])).fetchone()
@@ -105,10 +116,11 @@ def import_export(db_path: Path, export_path: Path, period: str, chat_id: str, u
                 ("missing from latest export", "import reconciliation",
                  period, chat_id, coverage_start.isoformat(), coverage_end.isoformat()),
             )
-        con.execute(
-            """INSERT OR REPLACE INTO workflow_runs
-               (period_key,stage,rule_version,status,details,completed_at)
-               VALUES (?,'semantic_dedupe','', 'pending',NULL,CURRENT_TIMESTAMP)""",
-            (period,),
-        )
+        for stage in ("prefilter", "semantic_dedupe"):
+            con.execute(
+                """INSERT OR REPLACE INTO workflow_runs
+                   (period_key,stage,rule_version,status,details,completed_at)
+                   VALUES (?,?,'','pending',NULL,CURRENT_TIMESTAMP)""",
+                (period, stage),
+            )
     return imported
