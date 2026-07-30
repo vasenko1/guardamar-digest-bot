@@ -15,7 +15,7 @@ from .db import connect
 
 _last_request_at = 0.0
 MIN_REQUEST_INTERVAL = 2.0
-MAX_RETRIES = 4
+MAX_RETRIES = 2
 
 
 def _post(url: str, headers: dict[str, str], body: dict) -> dict:

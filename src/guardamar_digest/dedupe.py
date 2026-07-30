@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import re
+import hashlib
 import unicodedata
 from collections import defaultdict
 from difflib import SequenceMatcher
 import json
+from urllib.error import HTTPError, URLError
 
 from .db import connect
 from .llm import _json, _post
 
 
 VERSION = "2026-07-30.1"
+_blocked_providers: set[str] = set()
 URL_OR_CONTACT = re.compile(r"https?://\S+|(?:@\w+)|\+?\d[\d ()-]{7,}")
 WORDS = re.compile(r"[\wа-яёáéíóúüñ]{3,}", re.I)
 STOP_WORDS = {
@@ -25,7 +28,7 @@ CONFIDENCE_MAP = {
 }
 
 
-def confidence(value: object) -> str:
+def normalize_confidence(value: object) -> str:
     """Free models sometimes localize enum values despite the JSON instruction."""
     if not isinstance(value, str):
         return "low"
@@ -37,6 +40,10 @@ def normalized(text: str) -> str:
     text = URL_OR_CONTACT.sub(" ", text)
     text = re.sub(r"[^\w\s]", " ", text)
     return " ".join(text.split())
+
+
+def fingerprint(text: str) -> str:
+    return hashlib.sha256(normalized(text).encode("utf-8")).hexdigest()
 
 
 def tokens(text: str) -> set[str]:
@@ -74,7 +81,6 @@ def dedupe(db_path, period: str) -> dict[str, int]:
         # Model conclusions are reproducible and may be refreshed; explicit
         # editor decisions are durable editorial data and must survive re-runs.
         con.execute("DELETE FROM duplicate_reviews WHERE period_key=? AND provider IS NOT 'manual'", (period,))
-        con.execute("DELETE FROM dedupe_topics WHERE period_key=?", (period,))
         con.execute(
             """UPDATE entries SET eligible=1, category_code=NULL, category_title=NULL,
                category_emoji=NULL, short_title=NULL, confidence=NULL, provider=NULL
@@ -87,7 +93,6 @@ def dedupe(db_path, period: str) -> dict[str, int]:
                WHERE e.period_key=? ORDER BY m.sender_id, m.published_at, m.message_id""",
             (period,),
         ).fetchall()
-
         by_author: dict[str, list] = defaultdict(list)
         for row in rows:
             # Missing immutable author id is unsafe for automatic matching.
@@ -185,6 +190,8 @@ def _review_prompt(pairs: list[tuple[object, object]]) -> str:
 
 
 def _ask_provider(settings, content: str, provider: str, max_tokens: int) -> dict:
+    if provider in _blocked_providers:
+        raise RuntimeError(f"{provider} temporarily rate-limited")
     if provider == "gemini" and settings.gemini_key:
         raw = _post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_key}",
@@ -205,7 +212,7 @@ def _ask_provider(settings, content: str, provider: str, max_tokens: int) -> dic
 
 
 def _topic_prompt(rows: list[object]) -> str:
-    data = [{"id": row["id"], "text": URL_OR_CONTACT.sub(" ", row["source_text"])[:700]} for row in rows]
+    data = [{"id": row["id"], "text": URL_OR_CONTACT.sub(" ", row["source_text"])[:420]} for row in rows]
     return """Ты определяешь, какие объявления ОДНОГО автора за месяц рекламируют
 одно и то же предложение. Верни ТОЛЬКО JSON:
 {\"items\":[{\"id\":1,\"intent\":\"offer|search|event|other\",
@@ -229,6 +236,9 @@ def discover_topics(settings, period: str) -> tuple[int, int]:
                  AND m.sender_id<>'' ORDER BY m.sender_id, m.published_at, m.message_id""",
             (period,),
         ).fetchall()
+        cached = {topic["message_id"]: topic for topic in con.execute(
+            "SELECT message_id,intent,offer_key,confidence,provider,text_fingerprint FROM dedupe_topics WHERE period_key=?", (period,)
+        )}
     by_author: dict[str, list] = defaultdict(list)
     for row in rows:
         by_author[row["sender_id"]].append(row)
@@ -239,10 +249,13 @@ def discover_topics(settings, period: str) -> tuple[int, int]:
     for author_rows in by_author.values():
         if len(author_rows) == 1:
             continue
-        if len(author_rows) > 24:
+        if all(cached.get(row["id"]) and cached[row["id"]]["text_fingerprint"] == fingerprint(row["source_text"]) for row in author_rows):
+            annotations.extend((row, cached[row["id"]]["intent"], cached[row["id"]]["offer_key"], cached[row["id"]]["confidence"], cached[row["id"]]["provider"]) for row in author_rows)
+            continue
+        if len(author_rows) > 10:
             # Large-volume publishers are riskier. Overlapping windows preserve
             # local context; their cross-window matches stay for editor review.
-            windows = [author_rows[index:index + 24] for index in range(0, len(author_rows), 20)]
+            windows = [author_rows[index:index + 10] for index in range(0, len(author_rows), 10)]
         else:
             windows = [author_rows]
         for window in windows:
@@ -260,12 +273,16 @@ def discover_topics(settings, period: str) -> tuple[int, int]:
                             raise ValueError("topic response has invalid intent")
                         if not isinstance(item.get("offer_key"), str) or not item["offer_key"].strip():
                             raise ValueError("topic response has empty offer_key")
-                        item["confidence"] = confidence(item.get("confidence"))
+                        item["confidence"] = normalize_confidence(item.get("confidence"))
                     by_id = {row["id"]: row for row in window}
                     annotations.extend((by_id[item["id"]], item["intent"], item["offer_key"].strip().casefold(), item["confidence"], provider) for item in items)
                     providers.append(provider)
                     break
-                except Exception as exc:
+                except HTTPError as exc:
+                    if exc.code == 429:
+                        _blocked_providers.add(provider)
+                    errors.append(f"{provider}: HTTP {exc.code}")
+                except (URLError, TimeoutError, OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
                     errors.append(f"{provider}: {exc}")
             else:
                 raise RuntimeError("; ".join(errors))
@@ -277,8 +294,8 @@ def discover_topics(settings, period: str) -> tuple[int, int]:
         for row, intent, offer_key, confidence, provider in annotations:
             con.execute(
                 """INSERT OR REPLACE INTO dedupe_topics
-                   (period_key,message_id,intent,offer_key,confidence,provider) VALUES (?,?,?,?,?,?)""",
-                (period, row["id"], intent, offer_key, confidence, provider),
+                   (period_key,message_id,intent,offer_key,confidence,provider,text_fingerprint) VALUES (?,?,?,?,?,?,?)""",
+                (period, row["id"], intent, offer_key, confidence, provider, fingerprint(row["source_text"])),
             )
         grouped: dict[tuple[str, str, str], list[object]] = defaultdict(list)
         for row, intent, offer_key, confidence, provider in annotations:
@@ -316,6 +333,7 @@ class _UnionFind:
 
 def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
     """Use tiny, all-or-nothing LLM batches to resolve semantic duplicate pairs."""
+    _blocked_providers.clear()
     topic_items, thematic_pairs = discover_topics(settings, period)
     pairs = _review_pairs(settings.db_path, period)
     if not pairs:
@@ -337,7 +355,7 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
                 if keys != expected:
                     raise ValueError(f"incomplete semantic response: expected {len(expected)} pairs, got {len(keys)}")
                 for item in returned:
-                    item["confidence"] = confidence(item.get("confidence"))
+                    item["confidence"] = normalize_confidence(item.get("confidence"))
                 decisions.extend(returned)
                 provider_used = provider if not provider_used else provider_used
                 break
