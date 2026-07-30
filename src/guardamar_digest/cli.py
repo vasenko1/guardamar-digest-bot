@@ -4,7 +4,7 @@ from urllib.request import Request, urlopen
 from .config import settings
 from .importer import import_export
 from .dedupe import dedupe, semantic_dedupe, review_report
-from .dedupe import decide_pairs
+from .dedupe import decide_pairs, exclude_messages
 from .llm import classify
 from .render import render
 
@@ -19,6 +19,7 @@ def main():
     x=sub.add_parser("duplicate-review"); x.add_argument("--period", required=True)
     x=sub.add_parser("duplicate-decide"); x.add_argument("--period", required=True)
     choice=x.add_mutually_exclusive_group(required=True); choice.add_argument("--same", nargs="+"); choice.add_argument("--different", nargs="+")
+    x=sub.add_parser("exclude"); x.add_argument("--period", required=True); x.add_argument("--reason", required=True); x.add_argument("message_ids", nargs="+", type=int)
     x=sub.add_parser("classify"); x.add_argument("--period", required=True)
     x=sub.add_parser("preview"); x.add_argument("--period", required=True); x.add_argument("--send", action="store_true")
     x=sub.add_parser("publish"); x.add_argument("--period", required=True)
@@ -39,6 +40,7 @@ def main():
                 raise SystemExit(f"Invalid pair {value!r}; use MESSAGE_ID:MESSAGE_ID")
             pairs.append((left, right))
         print(decide_pairs(s.db_path, a.period, pairs, same=a.same is not None))
+    elif a.cmd=="exclude": print(exclude_messages(s.db_path, a.period, a.message_ids, a.reason))
     elif a.cmd=="classify": print(classify(s,a.period))
     else:
         parts=render(s,a.period)

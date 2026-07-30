@@ -349,16 +349,69 @@ def decide_pairs(db_path, period: str, pairs: list[tuple[int, int]], same: bool)
                    WHERE period_key=? AND left_message_id=? AND right_message_id=?""",
                 ("same" if same else "different", period, row["left_message_id"], row["right_message_id"]),
             )
-            if same:
-                left_is_latest = (row["left_at"], row["left_external"]) > (row["right_at"], row["right_external"])
-                keeper = row["left_message_id"] if left_is_latest else row["right_message_id"]
-                duplicate = row["right_message_id"] if left_is_latest else row["left_message_id"]
-                con.execute(
-                    """UPDATE entries SET eligible=0, excluded_reason='duplicate', duplicate_of=?,
-                       dedupe_reason='semantic same author (editor)', dedupe_confidence=1.0,
-                       dedupe_version=?, needs_duplicate_review=0 WHERE message_id=?""",
-                    (keeper, VERSION, duplicate),
-                )
             applied += 1
+        _rebuild_semantic_duplicates(con, period)
         _refresh_review_flags(con, period)
     return applied
+
+
+def _rebuild_semantic_duplicates(con, period: str) -> None:
+    """Make transitive duplicate clusters point to their single latest message."""
+    con.execute(
+        """UPDATE entries SET eligible=1, excluded_reason=NULL, duplicate_of=NULL,
+           dedupe_reason=NULL, dedupe_confidence=NULL, dedupe_version=NULL
+           WHERE period_key=? AND dedupe_reason LIKE 'semantic same author%'""",
+        (period,),
+    )
+    pairs = con.execute(
+        """SELECT d.left_message_id, d.right_message_id FROM duplicate_reviews d
+           WHERE d.period_key=? AND d.status='same'""",
+        (period,),
+    ).fetchall()
+    union = _UnionFind()
+    involved: set[int] = set()
+    for pair in pairs:
+        union.join(pair["left_message_id"], pair["right_message_id"])
+        involved.update((pair["left_message_id"], pair["right_message_id"]))
+    if not involved:
+        return
+    rows = con.execute(
+        """SELECT id, message_id, published_at FROM messages WHERE id IN (%s)"""
+        % ",".join("?" for _ in involved),
+        tuple(involved),
+    ).fetchall()
+    by_id = {row["id"]: row for row in rows}
+    clusters: dict[int, list[int]] = defaultdict(list)
+    for message_id in involved:
+        clusters[union.find(message_id)].append(message_id)
+    for member_ids in clusters.values():
+        keeper = _canonical([by_id[message_id] for message_id in member_ids])
+        for message_id in member_ids:
+            if message_id == keeper["id"]:
+                continue
+            con.execute(
+                """UPDATE entries SET eligible=0, excluded_reason='duplicate', duplicate_of=?,
+                   dedupe_reason='semantic same author', dedupe_confidence=1.0,
+                   dedupe_version=?, needs_duplicate_review=0
+                   WHERE message_id=? AND (excluded_reason IS NULL OR dedupe_reason LIKE 'semantic same author%')""",
+                (keeper["id"], VERSION, message_id),
+            )
+
+
+def exclude_messages(db_path, period: str, message_ids: list[int], reason: str) -> int:
+    """Exclude non-ads or editorially unsuitable messages without deleting raw data."""
+    with connect(db_path) as con:
+        changed = 0
+        for external_id in message_ids:
+            result = con.execute(
+                """UPDATE entries SET eligible=0, excluded_reason=?, duplicate_of=NULL,
+                   dedupe_reason='editor exclusion', dedupe_confidence=NULL,
+                   dedupe_version=NULL, needs_duplicate_review=0
+                   WHERE period_key=? AND message_id=(SELECT id FROM messages WHERE message_id=?)""",
+                (reason, period, external_id),
+            )
+            if result.rowcount != 1:
+                raise ValueError(f"message {external_id} was not imported for {period}")
+            changed += 1
+        _refresh_review_flags(con, period)
+    return changed
