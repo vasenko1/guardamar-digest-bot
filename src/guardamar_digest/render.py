@@ -5,7 +5,7 @@ from collections import defaultdict
 from .db import connect
 
 
-LIMIT = 3700
+LIMIT = 3600
 
 def render(settings, period: str) -> list[str]:
     with connect(settings.db_path) as con:
@@ -23,7 +23,14 @@ def render(settings, period: str) -> list[str]:
         groups[cat].append(f'• {html.escape(title)}\u202f<a href="{html.escape(r["source_url"], quote=True)}">↗</a>')
     blocks=[]
     for (emoji, title), entries in groups.items():
-        blocks.append(f"{emoji} <b>{html.escape(title)}</b>\n" + "\n".join(entries))
+        heading=f"{emoji} <b>{html.escape(title)}</b>\n"
+        chunk=[]
+        for entry in entries:
+            candidate="\n".join(chunk+[entry])
+            if chunk and len(heading)+len(candidate)>LIMIT:
+                blocks.append(heading+"\n".join(chunk)); chunk=[entry]
+            else: chunk.append(entry)
+        if chunk: blocks.append(heading+"\n".join(chunk))
     month = period
     parts=[]; current=""
     for block in blocks:
