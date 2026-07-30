@@ -102,8 +102,8 @@ def classify(settings: Settings, period: str) -> str:
     if not fixed_categories: raise RuntimeError("Could not create category plan with free LLM providers")
     provider_used = []
     all_entries = []
-    for offset in range(0, len(rows), 8):
-      batch = rows[offset:offset + 8]
+    for offset in range(0, len(rows), 4):
+      batch = rows[offset:offset + 4]
       errors = []
       for provider in ("gemini", "openrouter"):
         try:
