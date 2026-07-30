@@ -20,7 +20,11 @@ def _post(url: str, headers: dict[str, str], body: dict) -> dict:
 
 def _json(text: str) -> dict:
     fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
-    return json.loads(fenced.group(1) if fenced else text)
+    candidate = fenced.group(1) if fenced else text.strip()
+    value, _ = json.JSONDecoder().raw_decode(candidate)
+    if not isinstance(value, dict):
+        raise ValueError("model response is not a JSON object")
+    return value
 
 
 def prompt(rows: list[dict]) -> str:
