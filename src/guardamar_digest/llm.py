@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+from http.client import IncompleteRead
+from json import JSONDecodeError
+from urllib.error import HTTPError
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -38,7 +41,7 @@ def classify(settings: Settings, period: str) -> str:
             "WHERE e.period_key=? AND e.manual_title IS NULL ORDER BY m.message_id",
             (period,),
         ).fetchall()
-    rows = [{"id": r["id"], "text": re.sub(r"https?://\S+|\+?\d[\d ()-]{7,}", "", r["source_text"])[:900]} for r in records]
+    rows = [{"id": r["id"], "text": re.sub(r"https?://\S+|\+?\d[\d ()-]{7,}", "", r["source_text"])[:420]} for r in records]
     if not rows:
         return "nothing to classify"
     content = prompt(rows)
@@ -63,6 +66,6 @@ def classify(settings: Settings, period: str) -> str:
                         (int(bool(entry.get("include"))), entry.get("category"), category.get("title"), category.get("emoji"), entry.get("title"), entry.get("confidence"), provider, entry.get("id"), period),
                     )
             return provider
-        except (KeyError, ValueError, URLError, TimeoutError) as exc:
+        except (HTTPError, IncompleteRead, JSONDecodeError, KeyError, ValueError, URLError, TimeoutError, OSError) as exc:
             errors.append(f"{provider}: {exc}")
     raise RuntimeError("; ".join(errors) or "No LLM API key configured")
