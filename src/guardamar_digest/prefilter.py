@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from .db import connect
 
 
-VERSION = "2026-07-30.1"
+VERSION = "2026-07-30.2"
 GENERIC_ONLY = re.compile(
     r"^(?:прода[её]тся|продам|торг|возможен торг|возможно торг|"
     r"актуально|срочно|подробности в личк[еу]|пишите в личк[еу])[\s.!?,…-]*$",
@@ -97,7 +97,9 @@ def prefilter(settings, period: str, as_of: str | None = None) -> dict[str, int]
             # An editor's explicit exclusion is immutable. Automatic duplicate
             # marks are re-examined because the source text may have changed
             # between exports.
-            if row["excluded_reason"] and row["dedupe_reason"] == "editor exclusion":
+            if row["excluded_reason"] and row["dedupe_reason"] in {
+                "editor exclusion", "import reconciliation",
+            }:
                 _audit(con, period, row["id"], "preserve", "existing_decision",
                        row["excluded_reason"])
                 continue

@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS dedupe_topics (
   confidence TEXT NOT NULL,
   provider TEXT NOT NULL,
   text_fingerprint TEXT,
+  rule_version TEXT,
   PRIMARY KEY(period_key, message_id)
 );
 """
@@ -130,6 +131,7 @@ def migrate(con: sqlite3.Connection) -> None:
     _add_column_if_missing(con, "entries", "needs_duplicate_review INTEGER NOT NULL DEFAULT 0")
     _add_column_if_missing(con, "entries", "classification_run_id TEXT")
     _add_column_if_missing(con, "dedupe_topics", "text_fingerprint TEXT")
+    _add_column_if_missing(con, "dedupe_topics", "rule_version TEXT")
     _add_column_if_missing(con, "duplicate_reviews", "left_fingerprint TEXT")
     _add_column_if_missing(con, "duplicate_reviews", "right_fingerprint TEXT")
     _add_column_if_missing(con, "duplicate_reviews", "reason_code TEXT")

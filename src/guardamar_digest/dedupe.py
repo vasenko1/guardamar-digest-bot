@@ -12,7 +12,7 @@ from .db import connect
 from .llm import _json, _post
 
 
-VERSION = "2026-07-30.2"
+VERSION = "2026-07-30.3"
 _blocked_providers: set[str] = set()
 
 
@@ -97,8 +97,34 @@ def dedupe(db_path, period: str) -> dict[str, int]:
         )
         con.execute(
             """UPDATE entries SET eligible=1, category_code=NULL, category_title=NULL,
-               category_emoji=NULL, short_title=NULL, confidence=NULL, provider=NULL
+               category_emoji=NULL, short_title=NULL, confidence=NULL, provider=NULL,
+               classification_run_id=NULL
                WHERE period_key=? AND manual_title IS NULL AND excluded_reason IS NULL""",
+            (period,),
+        )
+        # A changed arbitration algorithm must reconsider automatic decisions.
+        # Explicit editor choices remain authoritative until manually changed.
+        con.execute(
+            """UPDATE duplicate_reviews SET status='pending',confidence=NULL,
+               provider=NULL,reason_code=NULL,reason_detail=NULL,
+               rule_version=NULL,decided_at=NULL
+               WHERE period_key=? AND provider IS NOT 'manual'
+                 AND COALESCE(rule_version,'')<>?""",
+            (period, VERSION),
+        )
+        con.execute(
+            """UPDATE duplicate_reviews SET status='pending',confidence=NULL,
+               provider=NULL,reason_code=NULL,reason_detail=NULL,
+               rule_version=NULL,decided_at=NULL
+               WHERE period_key=? AND status='superseded'
+                 AND provider IS NOT 'manual'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM entries e
+                   WHERE e.message_id IN (
+                     duplicate_reviews.left_message_id,
+                     duplicate_reviews.right_message_id
+                   ) AND e.excluded_reason IS NOT NULL
+                 )""",
             (period,),
         )
         rows = con.execute(
@@ -161,12 +187,30 @@ def dedupe(db_path, period: str) -> dict[str, int]:
                             (round(score, 3), VERSION, left["id"], right["id"]),
                         )
                         review_pairs += 1
+        _rebuild_semantic_duplicates(con, period)
+        # A candidate involving an already excluded message no longer requires
+        # arbitration. Keep the row as audit history but remove it from queues.
+        con.execute(
+            """UPDATE duplicate_reviews SET status='superseded',
+               reason_code='endpoint_excluded',rule_version=?,
+               decided_at=CURRENT_TIMESTAMP
+               WHERE period_key=? AND status IN ('pending','uncertain')
+                 AND (
+                   EXISTS (SELECT 1 FROM entries e
+                           WHERE e.message_id=duplicate_reviews.left_message_id
+                             AND e.excluded_reason IS NOT NULL)
+                   OR EXISTS (SELECT 1 FROM entries e
+                              WHERE e.message_id=duplicate_reviews.right_message_id
+                                AND e.excluded_reason IS NOT NULL)
+                 )""",
+            (VERSION, period),
+        )
+        _refresh_review_flags(con, period)
+        _flatten_duplicate_chains(con, period)
         review_entries = con.execute(
             "SELECT COUNT(*) AS count FROM entries WHERE period_key=? AND needs_duplicate_review=1",
             (period,),
         ).fetchone()["count"]
-        _rebuild_semantic_duplicates(con, period)
-        _refresh_review_flags(con, period)
     return {"messages": len(rows), "auto_duplicates": auto_duplicates,
             "review_pairs": review_pairs, "review_entries": review_entries}
 
@@ -180,7 +224,9 @@ def _review_pairs(db_path, period: str) -> list[tuple[object, object]]:
                       r.published_at AS right_published_at, r.source_text AS right_text
                FROM duplicate_reviews d
                JOIN messages l ON l.id=d.left_message_id JOIN messages r ON r.id=d.right_message_id
+               JOIN entries le ON le.message_id=l.id JOIN entries re ON re.message_id=r.id
                WHERE d.period_key=? AND d.status IN ('pending','uncertain')
+                 AND le.excluded_reason IS NULL AND re.excluded_reason IS NULL
                ORDER BY l.id, r.id""",
             (period,),
         ).fetchall()
@@ -199,16 +245,25 @@ SEARCH_WORDS = re.compile(
     r"\b(?:ищу|ищем|сниму|куплю|нужен|нужна|нужны|требуется|"
     r"порекомендуйте|посоветуйте)\w*\b", re.I
 )
-DATE_TOKEN = re.compile(
-    r"(?<!\d)(?:[0-3]?\d[./-][01]?\d(?:[./-]20\d{2})?|"
-    r"[0-3]?\d\s+(?:января|февраля|марта|апреля|мая|июня|июля|"
-    r"августа|сентября|октября|ноября|декабря|січня|лютого|березня|"
-    r"квітня|травня|червня|липня|серпня|вересня|жовтня|листопада|грудня))",
+NUMERIC_DATE_TOKEN = re.compile(
+    r"(?<!\d)([0-3]?\d)[./-]([01]?\d)(?:[./-]20\d{2})?(?!\d)"
+)
+DATE_MONTHS = {
+    name: month for month, names in enumerate((
+        (), ("января", "січня"), ("февраля", "лютого"),
+        ("марта", "березня"), ("апреля", "квітня"), ("мая", "травня"),
+        ("июня", "червня"), ("июля", "липня"), ("августа", "серпня"),
+        ("сентября", "вересня"), ("октября", "жовтня"),
+        ("ноября", "листопада"), ("декабря", "грудня"),
+    )) for name in names
+}
+NAMED_DATE_TOKEN = re.compile(
+    r"(?<!\d)([0-3]?\d)\s+(" + "|".join(map(re.escape, DATE_MONTHS)) + r")\b",
     re.I,
 )
 ROUTE_TOKEN = re.compile(
-    r"\b[\wа-яёіїєґáéíóúüñ-]{3,}\s*(?:→|↔|—|-)\s*"
-    r"[\wа-яёіїєґáéíóúüñ-]{3,}\b", re.I
+    r"\b([\wа-яёіїєґáéíóúüñ-]{3,}?)\s*(→|↔|—|-)\s*"
+    r"([\wа-яёіїєґáéíóúüñ-]{3,})\b", re.I
 )
 
 
@@ -220,18 +275,38 @@ def _intent(text: str) -> str:
     return "other"
 
 
+def _date_features(text: str) -> set[tuple[int, int]]:
+    result = {
+        (int(day), int(month))
+        for day, month in NUMERIC_DATE_TOKEN.findall(text)
+        if 1 <= int(day) <= 31 and 1 <= int(month) <= 12
+    }
+    result.update(
+        (int(day), DATE_MONTHS[name.casefold()])
+        for day, name in NAMED_DATE_TOKEN.findall(text)
+        if 1 <= int(day) <= 31
+    )
+    return result
+
+
+def _route_features(text: str) -> set[tuple[str, str]]:
+    result = set()
+    for left, separator, right in ROUTE_TOKEN.findall(text):
+        endpoints = (left.casefold().strip("-"), right.casefold().strip("-"))
+        result.add(tuple(sorted(endpoints)) if separator == "↔" else endpoints)
+    return result
+
+
 def _deterministic_arbitration(left: object, right: object) -> tuple[str, str, str]:
     """Always produce a conservative-but-complete same/different decision."""
     a, b = left["source_text"], right["source_text"]
     intent_a, intent_b = _intent(a), _intent(b)
     if {intent_a, intent_b} == {"offer", "search"}:
         return "different", "intent_conflict", "high"
-    dates_a = {match.casefold() for match in DATE_TOKEN.findall(a)}
-    dates_b = {match.casefold() for match in DATE_TOKEN.findall(b)}
+    dates_a, dates_b = _date_features(a), _date_features(b)
     if dates_a and dates_b and dates_a.isdisjoint(dates_b):
         return "different", "explicit_date_conflict", "high"
-    routes_a = {match.casefold() for match in ROUTE_TOKEN.findall(a)}
-    routes_b = {match.casefold() for match in ROUTE_TOKEN.findall(b)}
+    routes_a, routes_b = _route_features(a), _route_features(b)
     if routes_a and routes_b and routes_a.isdisjoint(routes_b):
         return "different", "explicit_route_conflict", "high"
     score = similarity(a, b)
@@ -309,7 +384,9 @@ def discover_topics(settings, period: str) -> tuple[int, int]:
             (period,),
         ).fetchall()
         cached = {topic["message_id"]: topic for topic in con.execute(
-            "SELECT message_id,intent,offer_key,confidence,provider,text_fingerprint FROM dedupe_topics WHERE period_key=?", (period,)
+            """SELECT message_id,intent,offer_key,confidence,provider,
+                      text_fingerprint,rule_version
+               FROM dedupe_topics WHERE period_key=?""", (period,)
         )}
     by_author: dict[str, list] = defaultdict(list)
     for row in rows:
@@ -321,7 +398,12 @@ def discover_topics(settings, period: str) -> tuple[int, int]:
     for author_rows in by_author.values():
         if len(author_rows) == 1:
             continue
-        if all(cached.get(row["id"]) and cached[row["id"]]["text_fingerprint"] == fingerprint(row["source_text"]) for row in author_rows):
+        if all(
+            cached.get(row["id"])
+            and cached[row["id"]]["text_fingerprint"] == fingerprint(row["source_text"])
+            and cached[row["id"]]["rule_version"] == VERSION
+            for row in author_rows
+        ):
             annotations.extend((row, cached[row["id"]]["intent"], cached[row["id"]]["offer_key"], cached[row["id"]]["confidence"], cached[row["id"]]["provider"]) for row in author_rows)
             continue
         if len(author_rows) > 10:
@@ -366,8 +448,10 @@ def discover_topics(settings, period: str) -> tuple[int, int]:
         for row, intent, offer_key, confidence, provider in annotations:
             con.execute(
                 """INSERT OR REPLACE INTO dedupe_topics
-                   (period_key,message_id,intent,offer_key,confidence,provider,text_fingerprint) VALUES (?,?,?,?,?,?,?)""",
-                (period, row["id"], intent, offer_key, confidence, provider, fingerprint(row["source_text"])),
+                   (period_key,message_id,intent,offer_key,confidence,provider,
+                    text_fingerprint,rule_version) VALUES (?,?,?,?,?,?,?,?)""",
+                (period, row["id"], intent, offer_key, confidence, provider,
+                 fingerprint(row["source_text"]), VERSION),
             )
         grouped: dict[tuple[str, str, str], list[object]] = defaultdict(list)
         for row, intent, offer_key, confidence, provider in annotations:
@@ -480,6 +564,7 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
         # weak-phone path linear enough without sacrificing crash recovery.
         _rebuild_semantic_duplicates(con, period)
         _refresh_review_flags(con, period)
+        _flatten_duplicate_chains(con, period)
         semantic_duplicates = con.execute(
             """SELECT COUNT(*) FROM entries WHERE period_key=?
                AND dedupe_reason LIKE 'semantic same author%'""", (period,)
@@ -559,13 +644,17 @@ def decide_pairs(db_path, period: str, pairs: list[tuple[int, int]], same: bool)
             if row is None:
                 raise ValueError(f"pair {left_external}:{right_external} is not in the review queue")
             con.execute(
-                """UPDATE duplicate_reviews SET status=?, confidence='editor', provider='manual'
+                """UPDATE duplicate_reviews SET status=?,confidence='editor',
+                   provider='manual',reason_code='manual_editor_decision',
+                   reason_detail=NULL,rule_version=?,decided_at=CURRENT_TIMESTAMP
                    WHERE period_key=? AND left_message_id=? AND right_message_id=?""",
-                ("same" if same else "different", period, row["left_message_id"], row["right_message_id"]),
+                ("same" if same else "different", VERSION, period,
+                 row["left_message_id"], row["right_message_id"]),
             )
             applied += 1
         _rebuild_semantic_duplicates(con, period)
         _refresh_review_flags(con, period)
+        _flatten_duplicate_chains(con, period)
     return applied
 
 
@@ -579,7 +668,11 @@ def _rebuild_semantic_duplicates(con, period: str) -> None:
     )
     pairs = con.execute(
         """SELECT d.left_message_id, d.right_message_id FROM duplicate_reviews d
-           WHERE d.period_key=? AND d.status='same'""",
+           JOIN entries le ON le.message_id=d.left_message_id
+           JOIN entries re ON re.message_id=d.right_message_id
+           WHERE d.period_key=? AND d.status='same'
+             AND (le.excluded_reason IS NULL OR le.dedupe_reason LIKE 'semantic same author%')
+             AND (re.excluded_reason IS NULL OR re.dedupe_reason LIKE 'semantic same author%')""",
         (period,),
     ).fetchall()
     union = _UnionFind()
@@ -643,6 +736,33 @@ def _rebuild_semantic_duplicates(con, period: str) -> None:
                    dedupe_version=?, needs_duplicate_review=0
                    WHERE message_id=? AND (excluded_reason IS NULL OR dedupe_reason LIKE 'semantic same author%')""",
                 (keeper["id"], VERSION, message_id),
+            )
+
+
+def _flatten_duplicate_chains(con, period: str) -> None:
+    """Point every duplicate directly at the final active canonical entry."""
+    rows = con.execute(
+        """SELECT message_id,duplicate_of FROM entries
+           WHERE period_key=? AND excluded_reason='duplicate'""",
+        (period,),
+    ).fetchall()
+    parent = {
+        row["message_id"]: row["duplicate_of"]
+        for row in rows if row["duplicate_of"] is not None
+    }
+    for message_id, first_parent in parent.items():
+        terminal = first_parent
+        visited = {message_id}
+        while terminal in parent and terminal not in visited:
+            visited.add(terminal)
+            terminal = parent[terminal]
+        if terminal in visited:
+            # Leave a cycle visible for the publication validator.
+            continue
+        if terminal != first_parent:
+            con.execute(
+                "UPDATE entries SET duplicate_of=? WHERE message_id=?",
+                (terminal, message_id),
             )
 
 

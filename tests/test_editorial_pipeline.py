@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 from guardamar_digest.config import Settings
 from guardamar_digest.db import connect
+from guardamar_digest.dedupe import VERSION as DEDUPE_VERSION
+from guardamar_digest.dedupe import _date_features, _route_features
 from guardamar_digest.dedupe import dedupe, semantic_dedupe
+from guardamar_digest.importer import import_export
 from guardamar_digest.prefilter import prefilter
+from guardamar_digest.publisher import publish_parts
+from guardamar_digest.render import render
 from guardamar_digest.validate import validate_period
 
 
@@ -44,6 +50,17 @@ class PipelineTest(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_stop_features_normalize_date_and_route_formatting(self):
+        self.assertEqual(_date_features("Поездка 4.07"), _date_features("Поездка 04/07"))
+        self.assertEqual(
+            _route_features("Торревьеха-Валенсия"),
+            _route_features("Торревьеха → Валенсия"),
+        )
+        self.assertEqual(
+            _route_features("Торревьеха ↔ Валенсия"),
+            _route_features("Валенсия ↔ Торревьеха"),
+        )
 
     def test_prefilter_is_audited_and_preserves_cross_month_date(self):
         settings = make_settings(self.db, {"system"})
@@ -91,6 +108,172 @@ class PipelineTest(unittest.TestCase):
         self.assertNotIn("pending", statuses)
         self.assertNotIn("uncertain", statuses)
         self.assertEqual(flags, 0)
+
+    def test_duplicate_chain_is_flattened_to_active_canonical(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            first = add_message(
+                con, 18, "Аренда авто в Аликанте от владельца",
+                published="2026-07-01T10:00:00",
+            )
+            second = add_message(
+                con, 19, "Аренда авто в Аликанте от владельца",
+                published="2026-07-02T10:00:00",
+            )
+            final = add_message(
+                con, 20, "Аренда авто в Аликанте напрямую от владельца",
+                published="2026-07-03T10:00:00",
+            )
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)), \
+             patch("guardamar_digest.dedupe._ask_provider",
+                   side_effect=ValueError("provider unavailable")):
+            semantic_dedupe(settings, "2026-07")
+        with connect(self.db) as con:
+            rows = {
+                row["message_id"]: row
+                for row in con.execute(
+                    """SELECT message_id,eligible,excluded_reason,duplicate_of
+                       FROM entries WHERE message_id IN (?,?,?)""",
+                    (first, second, final),
+                )
+            }
+        self.assertEqual(rows[final]["eligible"], 1)
+        self.assertIsNone(rows[final]["excluded_reason"])
+        self.assertEqual(rows[first]["duplicate_of"], final)
+        self.assertEqual(rows[second]["duplicate_of"], final)
+
+    def test_dedupe_invalidates_classification_and_old_automatic_decision(self):
+        with connect(self.db) as con:
+            left = add_message(con, 12, "Аренда авто в Аликанте от владельца")
+            right = add_message(con, 13, "Аренда авто в Аликанте напрямую от владельца")
+            con.execute(
+                """UPDATE entries SET short_title='Старый заголовок',
+                   classification_run_id='old-run' WHERE period_key='2026-07'"""
+            )
+        dedupe(self.db, "2026-07")
+        with connect(self.db) as con:
+            con.execute(
+                """UPDATE duplicate_reviews SET status='same',confidence='high',
+                   provider='gemini',rule_version='old-version'
+                   WHERE period_key='2026-07'"""
+            )
+        dedupe(self.db, "2026-07")
+        with connect(self.db) as con:
+            entries = con.execute(
+                """SELECT short_title,classification_run_id FROM entries
+                   WHERE message_id IN (?,?)""", (left, right)
+            ).fetchall()
+            status = con.execute(
+                "SELECT status FROM duplicate_reviews WHERE period_key='2026-07'"
+            ).fetchone()["status"]
+        self.assertTrue(all(row["short_title"] is None for row in entries))
+        self.assertTrue(all(row["classification_run_id"] is None for row in entries))
+        self.assertEqual(status, "pending")
+
+    def test_manual_duplicate_decision_survives_rule_upgrade(self):
+        with connect(self.db) as con:
+            add_message(con, 14, "Уроки шахмат для детей")
+            add_message(con, 15, "Уроки шахмат для детей онлайн")
+        dedupe(self.db, "2026-07")
+        with connect(self.db) as con:
+            con.execute(
+                """UPDATE duplicate_reviews SET status='different',
+                   confidence='editor',provider='manual',rule_version='old'
+                   WHERE period_key='2026-07'"""
+            )
+        dedupe(self.db, "2026-07")
+        with connect(self.db) as con:
+            row = con.execute(
+                """SELECT status,provider FROM duplicate_reviews
+                   WHERE period_key='2026-07'"""
+            ).fetchone()
+        self.assertEqual((row["status"], row["provider"]), ("different", "manual"))
+
+    def test_superseded_pair_reactivates_when_message_returns(self):
+        with connect(self.db) as con:
+            add_message(con, 16, "Аренда авто в Аликанте от владельца")
+            add_message(con, 17, "Аренда авто в Аликанте напрямую от владельца")
+        dedupe(self.db, "2026-07")
+        with connect(self.db) as con:
+            con.execute(
+                """UPDATE duplicate_reviews SET status='superseded',
+                   provider='rule',rule_version=? WHERE period_key='2026-07'""",
+                (DEDUPE_VERSION,),
+            )
+        dedupe(self.db, "2026-07")
+        with connect(self.db) as con:
+            status = con.execute(
+                "SELECT status FROM duplicate_reviews WHERE period_key='2026-07'"
+            ).fetchone()["status"]
+        self.assertEqual(status, "pending")
+
+    def test_reimport_marks_deleted_message_without_deleting_raw_record(self):
+        first = Path(self.tmp.name) / "first.json"
+        second = Path(self.tmp.name) / "second.json"
+        common = {
+            "type": "message", "from": "Автор", "from_id": "author",
+        }
+        first.write_text(json.dumps({"messages": [
+            {**common, "id": 40, "date": "2026-07-01T10:00:00", "text": "Продам стол"},
+            {**common, "id": 41, "date": "2026-07-10T10:00:00", "text": "Продам стул"},
+            {**common, "id": 42, "date": "2026-07-20T10:00:00", "text": "Продам шкаф"},
+        ]}), encoding="utf-8")
+        second.write_text(json.dumps({"messages": [
+            {**common, "id": 40, "date": "2026-07-01T10:00:00", "text": "Продам стол"},
+            {**common, "id": 42, "date": "2026-07-20T10:00:00", "text": "Продам шкаф"},
+        ]}), encoding="utf-8")
+        import_export(self.db, first, "2026-07", "-1001", "MarketGuardamar")
+        import_export(self.db, second, "2026-07", "-1001", "MarketGuardamar")
+        with connect(self.db) as con:
+            raw = con.execute(
+                "SELECT COUNT(*) FROM messages WHERE message_id=41"
+            ).fetchone()[0]
+            entry = con.execute(
+                """SELECT eligible,excluded_reason,dedupe_reason FROM entries e
+                   JOIN messages m ON m.id=e.message_id WHERE m.message_id=41"""
+            ).fetchone()
+        self.assertEqual(raw, 1)
+        self.assertEqual(
+            (entry["eligible"], entry["excluded_reason"], entry["dedupe_reason"]),
+            (0, "missing from latest export", "import reconciliation"),
+        )
+
+    def test_render_blocks_null_classification_run_id(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            add_message(con, 43, "Услуги массажа")
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run','sig','[]','complete')"""
+            )
+        with self.assertRaisesRegex(RuntimeError, "Classification is incomplete"):
+            render(settings, "2026-07")
+
+    def test_publication_resume_skips_already_sent_parts(self):
+        settings = make_settings(self.db)
+        calls: list[str] = []
+
+        def sender(token, destination, text):
+            calls.append(text)
+            return {"ok": True, "result": {"message_id": 100 + len(calls)}}
+
+        first = publish_parts(settings, "2026-07", ["one", "two"], sender)
+        second = publish_parts(settings, "2026-07", ["one", "two"], sender)
+        self.assertEqual(first, {"sent": 2, "skipped": 0, "parts": 2})
+        self.assertEqual(second, {"sent": 0, "skipped": 2, "parts": 2})
+        self.assertEqual(calls, ["one", "two"])
+
+    def test_publication_blocks_changed_already_sent_part(self):
+        settings = make_settings(self.db)
+
+        def sender(token, destination, text):
+            return {"ok": True, "result": {"message_id": 101}}
+
+        publish_parts(settings, "2026-07", ["original"], sender)
+        with self.assertRaisesRegex(RuntimeError, "already sent part 1 changed"):
+            publish_parts(settings, "2026-07", ["changed"], sender)
 
     def test_validator_blocks_unresolved_and_title_leaks(self):
         settings = make_settings(self.db)

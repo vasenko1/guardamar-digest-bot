@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 from .db import connect
 from .dedupe import VERSION as DEDUPE_VERSION
 from .prefilter import VERSION as PREFILTER_VERSION
+from .render import telegram_length
 
 
 PHONE = re.compile(r"\+?\d[\d ()-]{7,}")
@@ -102,6 +103,20 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
         ).fetchone()[0]
         if review_flags:
             errors.append(f"{review_flags} entries still have duplicate-review flags")
+        broken_canonicals = con.execute(
+            """SELECT COUNT(*) FROM entries duplicate
+               LEFT JOIN entries keeper ON keeper.message_id=duplicate.duplicate_of
+               WHERE duplicate.period_key=? AND duplicate.excluded_reason='duplicate'
+                 AND (
+                   keeper.message_id IS NULL OR keeper.period_key<>duplicate.period_key
+                   OR keeper.eligible<>1 OR keeper.excluded_reason IS NOT NULL
+                 )""",
+            (period,),
+        ).fetchone()[0]
+        if broken_canonicals:
+            errors.append(
+                f"{broken_canonicals} duplicates point to a missing or excluded canonical entry"
+            )
         missing = con.execute(
             """SELECT COUNT(*) FROM entries
                WHERE period_key=? AND excluded_reason IS NULL
@@ -152,8 +167,9 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
     if not rows:
         errors.append("digest has no publishable entries")
     for number, part in enumerate(rendered_parts or (), 1):
-        if len(part) > 4096:
-            errors.append(f"part {number}: Telegram limit exceeded ({len(part)} chars)")
+        part_length = telegram_length(part)
+        if part_length > 4096:
+            errors.append(f"part {number}: Telegram limit exceeded ({part_length} UTF-16 units)")
         parser = _StrictTelegramHTML()
         try:
             parser.feed(part)

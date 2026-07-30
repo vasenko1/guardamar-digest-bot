@@ -7,6 +7,7 @@ from .dedupe import dedupe, semantic_dedupe, review_report
 from .dedupe import decide_pairs, exclude_messages, exclude_senders
 from .llm import classify
 from .prefilter import audit_report, prefilter
+from .publisher import publish_parts
 from .render import render
 from .validate import validate_period
 
@@ -63,9 +64,13 @@ def main():
         if a.cmd=="publish" or a.send:
             validate_period(s,a.period,parts).require_ok()
         target=s.admin_chat_id if a.cmd=="preview" else s.source_chat_id
-        if not (a.cmd=="preview" and not a.send):
+        if a.cmd=="publish":
+            if not s.bot_token or not target: raise SystemExit("Bot token and target chat ID are required")
+            print(json.dumps(publish_parts(s,a.period,parts,send),ensure_ascii=False))
+        elif a.send:
             if not s.bot_token or not target: raise SystemExit("Bot token and target chat ID are required")
             for part in parts: send(s.bot_token,target,part)
-        else: print("\n\n--- PART ---\n".join(parts))
+        else:
+            print("\n\n--- PART ---\n".join(parts))
 
 if __name__ == "__main__": main()
