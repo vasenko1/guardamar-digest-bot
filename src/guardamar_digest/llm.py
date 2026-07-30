@@ -20,6 +20,7 @@ _last_request_at = 0.0
 # room for the category-plan call and retry jitter.
 MIN_REQUEST_INTERVAL = 5.0
 MAX_RETRIES = 2
+CLASSIFIER_VERSION = "2026-07-30.2"
 
 
 def _post(url: str, headers: dict[str, str], body: dict) -> dict:
@@ -95,7 +96,7 @@ def classify(settings: Settings, period: str) -> str:
     rows = [{"id": r["id"], "text": re.sub(r"https?://\S+|\+?\d[\d ()-]{7,}", "", r["source_text"])[:420]} for r in records]
     if not rows:
         return "nothing to classify"
-    signature=hashlib.sha256(json.dumps(rows,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+    signature=hashlib.sha256((CLASSIFIER_VERSION+json.dumps(rows,ensure_ascii=False,sort_keys=True)).encode()).hexdigest()
     with connect(settings.db_path) as con:
         run=con.execute("SELECT * FROM classification_runs WHERE period_key=?",(period,)).fetchone()
     fixed_categories = json.loads(run["categories_json"]) if run and run["input_signature"]==signature else None
