@@ -3,7 +3,7 @@ import argparse, json
 from urllib.request import Request, urlopen
 from .config import settings
 from .importer import import_export
-from .dedupe import dedupe, semantic_dedupe
+from .dedupe import dedupe, semantic_dedupe, review_report
 from .llm import classify
 from .render import render
 
@@ -15,6 +15,7 @@ def main():
     p=argparse.ArgumentParser(); sub=p.add_subparsers(dest="cmd", required=True)
     x=sub.add_parser("import"); x.add_argument("file"); x.add_argument("--period", required=True)
     x=sub.add_parser("dedupe"); x.add_argument("--period", required=True); x.add_argument("--semantic", action="store_true")
+    x=sub.add_parser("duplicate-review"); x.add_argument("--period", required=True)
     x=sub.add_parser("classify"); x.add_argument("--period", required=True)
     x=sub.add_parser("preview"); x.add_argument("--period", required=True); x.add_argument("--send", action="store_true")
     x=sub.add_parser("publish"); x.add_argument("--period", required=True)
@@ -24,6 +25,7 @@ def main():
         result=dedupe(s.db_path, a.period)
         if a.semantic: result["semantic"] = semantic_dedupe(s, a.period)
         print(json.dumps(result, ensure_ascii=False))
+    elif a.cmd=="duplicate-review": print(review_report(s.db_path, a.period))
     elif a.cmd=="classify": print(classify(s,a.period))
     else:
         parts=render(s,a.period)

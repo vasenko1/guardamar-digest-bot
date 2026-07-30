@@ -50,6 +50,16 @@ CREATE TABLE IF NOT EXISTS publications (
   sent_at TEXT,
   PRIMARY KEY(period_key, destination, part_no)
 );
+CREATE TABLE IF NOT EXISTS duplicate_reviews (
+  period_key TEXT NOT NULL,
+  left_message_id INTEGER NOT NULL REFERENCES messages(id),
+  right_message_id INTEGER NOT NULL REFERENCES messages(id),
+  lexical_score REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  confidence TEXT,
+  provider TEXT,
+  PRIMARY KEY(period_key, left_message_id, right_message_id)
+);
 """
 
 
@@ -72,6 +82,7 @@ def migrate(con: sqlite3.Connection) -> None:
     con.execute("CREATE INDEX IF NOT EXISTS entries_period ON entries(period_key)")
     con.execute("CREATE INDEX IF NOT EXISTS messages_sender_period ON messages(sender_id, published_at)")
     con.execute("CREATE INDEX IF NOT EXISTS entries_duplicate_review ON entries(period_key, needs_duplicate_review)")
+    con.execute("CREATE INDEX IF NOT EXISTS duplicate_reviews_status ON duplicate_reviews(period_key, status)")
 
 
 @contextmanager
