@@ -16,7 +16,9 @@ from .config import Settings
 from .db import connect
 
 _last_request_at = 0.0
-MIN_REQUEST_INTERVAL = 2.0
+# Gemini free tier for the configured model allows 15 RPM; 5 seconds leaves
+# room for the category-plan call and retry jitter.
+MIN_REQUEST_INTERVAL = 5.0
 MAX_RETRIES = 2
 
 
