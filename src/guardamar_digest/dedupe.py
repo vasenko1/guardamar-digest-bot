@@ -372,7 +372,13 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
             except Exception as exc:  # individual provider errors are reported only if all fallbacks fail
                 errors.append(f"{provider}: {exc}")
         else:
-            raise RuntimeError("; ".join(errors))
+            # Do not turn an exhausted free-provider pool into a failed monthly
+            # workflow. No decisions from this run have been written yet, so the
+            # existing pending queue remains intact for editor review.
+            return {"topic_items": topic_items, "thematic_pairs": thematic_pairs,
+                    "candidate_pairs": len(pairs), "semantic_duplicates": 0,
+                    "unresolved_pairs": len(pairs), "provider": "none",
+                    "topic_warning": topic_error, "pair_warning": "; ".join(errors)}
 
     by_id = {row["id"]: row for pair in pairs for row in pair}
     groups = _UnionFind()
@@ -425,7 +431,7 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
                 )
                 semantic_duplicates += 1
     return {"topic_items": topic_items, "thematic_pairs": thematic_pairs, "candidate_pairs": len(pairs), "semantic_duplicates": semantic_duplicates,
-            "unresolved_pairs": unresolved_pairs, "provider": provider_used, "topic_warning": topic_error}
+            "unresolved_pairs": unresolved_pairs, "provider": provider_used, "topic_warning": topic_error, "pair_warning": ""}
 
 
 def review_report(db_path, period: str) -> str:
