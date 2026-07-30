@@ -33,8 +33,6 @@ CREATE TABLE IF NOT EXISTS entries (
   confidence TEXT,
   provider TEXT,
   classification_run_id TEXT,
-  left_fingerprint TEXT,
-  right_fingerprint TEXT,
   manual_title TEXT,
   manual_category TEXT,
   excluded_reason TEXT,
@@ -62,6 +60,15 @@ CREATE TABLE IF NOT EXISTS classification_runs (
   lock_until TEXT,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  period_key TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  rule_version TEXT NOT NULL,
+  status TEXT NOT NULL,
+  details TEXT,
+  completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(period_key, stage)
+);
 CREATE TABLE IF NOT EXISTS duplicate_reviews (
   period_key TEXT NOT NULL,
   left_message_id INTEGER NOT NULL REFERENCES messages(id),
@@ -70,7 +77,27 @@ CREATE TABLE IF NOT EXISTS duplicate_reviews (
   status TEXT NOT NULL DEFAULT 'pending',
   confidence TEXT,
   provider TEXT,
+  reason_code TEXT,
+  reason_detail TEXT,
+  rule_version TEXT,
+  decided_at TEXT,
+  left_fingerprint TEXT,
+  right_fingerprint TEXT,
   PRIMARY KEY(period_key, left_message_id, right_message_id)
+);
+CREATE TABLE IF NOT EXISTS editorial_audit (
+  id INTEGER PRIMARY KEY,
+  period_key TEXT NOT NULL,
+  message_id INTEGER NOT NULL REFERENCES messages(id),
+  stage TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  reason_detail TEXT,
+  confidence TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  rule_version TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(period_key, message_id, stage, rule_version)
 );
 CREATE TABLE IF NOT EXISTS dedupe_topics (
   period_key TEXT NOT NULL,
@@ -105,11 +132,16 @@ def migrate(con: sqlite3.Connection) -> None:
     _add_column_if_missing(con, "dedupe_topics", "text_fingerprint TEXT")
     _add_column_if_missing(con, "duplicate_reviews", "left_fingerprint TEXT")
     _add_column_if_missing(con, "duplicate_reviews", "right_fingerprint TEXT")
+    _add_column_if_missing(con, "duplicate_reviews", "reason_code TEXT")
+    _add_column_if_missing(con, "duplicate_reviews", "reason_detail TEXT")
+    _add_column_if_missing(con, "duplicate_reviews", "rule_version TEXT")
+    _add_column_if_missing(con, "duplicate_reviews", "decided_at TEXT")
     con.execute("CREATE INDEX IF NOT EXISTS entries_period ON entries(period_key)")
     con.execute("CREATE INDEX IF NOT EXISTS messages_sender_period ON messages(sender_id, published_at)")
     con.execute("CREATE INDEX IF NOT EXISTS entries_duplicate_review ON entries(period_key, needs_duplicate_review)")
     con.execute("CREATE INDEX IF NOT EXISTS duplicate_reviews_status ON duplicate_reviews(period_key, status)")
     con.execute("CREATE INDEX IF NOT EXISTS dedupe_topics_offer ON dedupe_topics(period_key, offer_key)")
+    con.execute("CREATE INDEX IF NOT EXISTS editorial_audit_period ON editorial_audit(period_key, stage, decision)")
 
 
 @contextmanager

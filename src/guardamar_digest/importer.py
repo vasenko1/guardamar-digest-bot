@@ -64,5 +64,17 @@ def import_export(db_path: Path, export_path: Path, period: str, chat_id: str, u
             )
             row = con.execute("SELECT id FROM messages WHERE chat_id=? AND message_id=?", (chat_id, item["id"])).fetchone()
             con.execute("INSERT OR IGNORE INTO entries(message_id,period_key) VALUES (?,?)", (row["id"], period))
+            # Re-import may change text or author. Force every derived stage to
+            # re-audit this source record before it can be published.
+            con.execute(
+                "DELETE FROM editorial_audit WHERE period_key=? AND message_id=?",
+                (period, row["id"]),
+            )
             imported += 1
+        con.execute(
+            """INSERT OR REPLACE INTO workflow_runs
+               (period_key,stage,rule_version,status,details,completed_at)
+               VALUES (?,'semantic_dedupe','', 'pending',NULL,CURRENT_TIMESTAMP)""",
+            (period,),
+        )
     return imported

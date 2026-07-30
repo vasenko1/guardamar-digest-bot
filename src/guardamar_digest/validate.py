@@ -1,0 +1,163 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from html.parser import HTMLParser
+
+from .db import connect
+from .dedupe import VERSION as DEDUPE_VERSION
+from .prefilter import VERSION as PREFILTER_VERSION
+
+
+PHONE = re.compile(r"\+?\d[\d ()-]{7,}")
+CONTACT = re.compile(r"https?://|www\.|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|@\w+", re.I)
+PRICE = re.compile(r"(?:\d[\d\s.,]*\s*(?:€|eur\b|евро\b|₽|\$|грн\b)|(?:€|\$)\s*\d)", re.I)
+GENERIC = re.compile(
+    r"^(?:объявление|продажа товара|прода[её]тся|стабільна ціна|"
+    r"возможно торг|рекомендация услуг)\W*$", re.I
+)
+UKRAINIAN_ONLY = re.compile(r"[іїєґ]", re.I)
+
+
+class _StrictTelegramHTML(HTMLParser):
+    allowed = {"b", "a"}
+
+    def __init__(self):
+        super().__init__()
+        self.stack: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag not in self.allowed:
+            raise ValueError(f"unsupported HTML tag <{tag}>")
+        if tag == "a" and not dict(attrs).get("href", "").startswith("https://t.me/"):
+            raise ValueError("non-Telegram link")
+        self.stack.append(tag)
+
+    def handle_endtag(self, tag):
+        if tag not in self.allowed:
+            raise ValueError(f"unsupported HTML tag </{tag}>")
+        if not self.stack or self.stack.pop() != tag:
+            raise ValueError(f"mismatched closing tag </{tag}>")
+
+    def close(self):
+        super().close()
+        if self.stack:
+            raise ValueError(f"unclosed HTML tag <{self.stack[-1]}>")
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    errors: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+    def require_ok(self) -> None:
+        if self.errors:
+            raise RuntimeError(
+                "Publication blocked:\n- " + "\n- ".join(self.errors)
+            )
+
+
+def validate_period(settings, period: str, rendered_parts: list[str] | None = None) -> ValidationResult:
+    errors: list[str] = []
+    with connect(settings.db_path) as con:
+        run = con.execute(
+            "SELECT run_id,status FROM classification_runs WHERE period_key=?", (period,)
+        ).fetchone()
+        if not run or run["status"] != "complete":
+            errors.append("classification run is not complete")
+            run_id = ""
+        else:
+            run_id = run["run_id"]
+        total_entries = con.execute(
+            "SELECT COUNT(*) FROM entries WHERE period_key=?", (period,)
+        ).fetchone()[0]
+        audited_entries = con.execute(
+            """SELECT COUNT(DISTINCT message_id) FROM editorial_audit
+               WHERE period_key=? AND stage='prefilter' AND rule_version=?""",
+            (period, PREFILTER_VERSION),
+        ).fetchone()[0]
+        if audited_entries != total_entries:
+            errors.append(
+                f"current prefilter did not audit every entry ({audited_entries}/{total_entries})"
+            )
+        dedupe_run = con.execute(
+            """SELECT status,rule_version FROM workflow_runs
+               WHERE period_key=? AND stage='semantic_dedupe'""", (period,)
+        ).fetchone()
+        if not dedupe_run or dedupe_run["status"] != "complete" or dedupe_run["rule_version"] != DEDUPE_VERSION:
+            errors.append("current automatic duplicate arbitration was not completed")
+        unresolved = con.execute(
+            """SELECT COUNT(*) FROM duplicate_reviews
+               WHERE period_key=? AND status IN ('pending','uncertain')""", (period,)
+        ).fetchone()[0]
+        if unresolved:
+            errors.append(f"{unresolved} duplicate decisions are unresolved")
+        review_flags = con.execute(
+            """SELECT COUNT(*) FROM entries WHERE period_key=?
+               AND needs_duplicate_review=1""", (period,)
+        ).fetchone()[0]
+        if review_flags:
+            errors.append(f"{review_flags} entries still have duplicate-review flags")
+        missing = con.execute(
+            """SELECT COUNT(*) FROM entries
+               WHERE period_key=? AND excluded_reason IS NULL
+                 AND manual_title IS NULL
+                 AND (classification_run_id IS NULL OR classification_run_id<>?)""",
+            (period, run_id),
+        ).fetchone()[0]
+        if missing:
+            errors.append(f"{missing} eligible candidates were not classified in the current run")
+        rows = con.execute(
+            """SELECT m.message_id,m.sender_id,m.source_url,e.short_title,e.manual_title,
+                      e.category_code,e.category_title,e.manual_category
+               FROM entries e JOIN messages m ON m.id=e.message_id
+               WHERE e.period_key=? AND e.eligible=1 AND e.excluded_reason IS NULL""",
+            (period,),
+        ).fetchall()
+    seen_urls: set[str] = set()
+    seen_titles: set[tuple[str, str]] = set()
+    expected_prefix = f"https://t.me/{settings.source_username}/"
+    for row in rows:
+        external_id = row["message_id"]
+        title = (row["manual_title"] or row["short_title"] or "").strip()
+        category = (row["manual_category"] or row["category_title"] or "").strip()
+        if not title:
+            errors.append(f"message {external_id}: empty showcase title")
+            continue
+        if not category or not row["category_code"]:
+            errors.append(f"message {external_id}: missing category")
+        if PHONE.search(title) or CONTACT.search(title):
+            errors.append(f"message {external_id}: contact or URL leaked into title")
+        if PRICE.search(title):
+            errors.append(f"message {external_id}: price leaked into title")
+        if GENERIC.fullmatch(title):
+            errors.append(f"message {external_id}: generic non-informative title")
+        if UKRAINIAN_ONLY.search(title):
+            errors.append(f"message {external_id}: showcase title is not normalized to Russian")
+        if row["sender_id"] in settings.excluded_sender_ids:
+            errors.append(f"message {external_id}: excluded author reached publication")
+        if not row["source_url"].startswith(expected_prefix):
+            errors.append(f"message {external_id}: invalid source URL")
+        if row["source_url"] in seen_urls:
+            errors.append(f"message {external_id}: duplicate source URL")
+        seen_urls.add(row["source_url"])
+        title_key = (category.casefold(), " ".join(title.casefold().split()))
+        if title_key in seen_titles:
+            errors.append(f"message {external_id}: duplicate title inside category")
+        seen_titles.add(title_key)
+    if not rows:
+        errors.append("digest has no publishable entries")
+    for number, part in enumerate(rendered_parts or (), 1):
+        if len(part) > 4096:
+            errors.append(f"part {number}: Telegram limit exceeded ({len(part)} chars)")
+        parser = _StrictTelegramHTML()
+        try:
+            parser.feed(part)
+            parser.close()
+        except ValueError as exc:
+            errors.append(f"part {number}: invalid Telegram HTML: {exc}")
+    return ValidationResult(tuple(dict.fromkeys(errors)))

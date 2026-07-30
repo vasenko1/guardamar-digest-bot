@@ -20,6 +20,7 @@ venv/
 # Local imports and Telegram exports
 imports/
 result.json
+result_*.json
 ChatExport_*/
 
 # OS/editor files

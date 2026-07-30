@@ -12,7 +12,7 @@ from .db import connect
 from .llm import _json, _post
 
 
-VERSION = "2026-07-30.1"
+VERSION = "2026-07-30.2"
 _blocked_providers: set[str] = set()
 
 
@@ -67,13 +67,26 @@ def similarity(left: str, right: str) -> float:
 
 
 def _canonical(rows: list) -> object:
-    # The latest full message is the link readers should open. This is deliberate:
-    # edits/reposts usually contain the freshest availability information.
-    return max(rows, key=lambda row: (row["published_at"], row["message_id"]))
+    # Prefer the latest *full* repost. A trailing "возможно торг" or truncated
+    # export must never replace a complete advertisement merely because it is
+    # newer.
+    lengths = [len(normalized(row["source_text"])) if "source_text" in row.keys() else 0 for row in rows]
+    longest = max(lengths, default=0)
+    full = [
+        row for row, length in zip(rows, lengths)
+        if not longest or length >= max(20, int(longest * 0.7))
+    ]
+    return max(full or rows, key=lambda row: (row["published_at"], row["message_id"]))
 
 
 def dedupe(db_path, period: str) -> dict[str, int]:
     with connect(db_path) as con:
+        con.execute(
+            """INSERT OR REPLACE INTO workflow_runs
+               (period_key,stage,rule_version,status,details,completed_at)
+               VALUES (?,'semantic_dedupe',?,'pending',NULL,CURRENT_TIMESTAMP)""",
+            (period, VERSION),
+        )
         # Re-running is idempotent. Manual editorial exclusions are never touched.
         con.execute(
             """UPDATE entries SET excluded_reason=NULL, duplicate_of=NULL,
@@ -85,13 +98,14 @@ def dedupe(db_path, period: str) -> dict[str, int]:
         con.execute(
             """UPDATE entries SET eligible=1, category_code=NULL, category_title=NULL,
                category_emoji=NULL, short_title=NULL, confidence=NULL, provider=NULL
-               WHERE period_key=? AND manual_title IS NULL""",
+               WHERE period_key=? AND manual_title IS NULL AND excluded_reason IS NULL""",
             (period,),
         )
         rows = con.execute(
             """SELECT m.id, m.message_id, m.published_at, m.sender_id, m.source_text
                FROM messages m JOIN entries e ON e.message_id=m.id
-               WHERE e.period_key=? ORDER BY m.sender_id, m.published_at, m.message_id""",
+               WHERE e.period_key=? AND e.excluded_reason IS NULL
+               ORDER BY m.sender_id, m.published_at, m.message_id""",
             (period,),
         ).fetchall()
         current = {row["id"]: fingerprint(row["source_text"]) for row in rows}
@@ -166,7 +180,8 @@ def _review_pairs(db_path, period: str) -> list[tuple[object, object]]:
                       r.published_at AS right_published_at, r.source_text AS right_text
                FROM duplicate_reviews d
                JOIN messages l ON l.id=d.left_message_id JOIN messages r ON r.id=d.right_message_id
-               WHERE d.period_key=? AND d.status='pending' ORDER BY l.id, r.id""",
+               WHERE d.period_key=? AND d.status IN ('pending','uncertain')
+               ORDER BY l.id, r.id""",
             (period,),
         ).fetchall()
     return [
@@ -174,6 +189,62 @@ def _review_pairs(db_path, period: str) -> list[tuple[object, object]]:
          {"id": row["right_id"], "message_id": row["right_external_id"], "published_at": row["right_published_at"], "source_text": row["right_text"]})
         for row in rows
     ]
+
+
+OFFER_WORDS = re.compile(
+    r"\b(?:продам|прода[её]тся|сдам|предлага|услуг|аренд[ау]|"
+    r"курс|заняти|урок|доставк|ремонт|установк)\w*\b", re.I
+)
+SEARCH_WORDS = re.compile(
+    r"\b(?:ищу|ищем|сниму|куплю|нужен|нужна|нужны|требуется|"
+    r"порекомендуйте|посоветуйте)\w*\b", re.I
+)
+DATE_TOKEN = re.compile(
+    r"(?<!\d)(?:[0-3]?\d[./-][01]?\d(?:[./-]20\d{2})?|"
+    r"[0-3]?\d\s+(?:января|февраля|марта|апреля|мая|июня|июля|"
+    r"августа|сентября|октября|ноября|декабря|січня|лютого|березня|"
+    r"квітня|травня|червня|липня|серпня|вересня|жовтня|листопада|грудня))",
+    re.I,
+)
+ROUTE_TOKEN = re.compile(
+    r"\b[\wа-яёіїєґáéíóúüñ-]{3,}\s*(?:→|↔|—|-)\s*"
+    r"[\wа-яёіїєґáéíóúüñ-]{3,}\b", re.I
+)
+
+
+def _intent(text: str) -> str:
+    if SEARCH_WORDS.search(text):
+        return "search"
+    if OFFER_WORDS.search(text):
+        return "offer"
+    return "other"
+
+
+def _deterministic_arbitration(left: object, right: object) -> tuple[str, str, str]:
+    """Always produce a conservative-but-complete same/different decision."""
+    a, b = left["source_text"], right["source_text"]
+    intent_a, intent_b = _intent(a), _intent(b)
+    if {intent_a, intent_b} == {"offer", "search"}:
+        return "different", "intent_conflict", "high"
+    dates_a = {match.casefold() for match in DATE_TOKEN.findall(a)}
+    dates_b = {match.casefold() for match in DATE_TOKEN.findall(b)}
+    if dates_a and dates_b and dates_a.isdisjoint(dates_b):
+        return "different", "explicit_date_conflict", "high"
+    routes_a = {match.casefold() for match in ROUTE_TOKEN.findall(a)}
+    routes_b = {match.casefold() for match in ROUTE_TOKEN.findall(b)}
+    if routes_a and routes_b and routes_a.isdisjoint(routes_b):
+        return "different", "explicit_route_conflict", "high"
+    score = similarity(a, b)
+    common = tokens(a) & tokens(b)
+    smaller = min(len(tokens(a)), len(tokens(b))) or 1
+    containment = len(common) / smaller
+    if score >= 0.72 or containment >= 0.62:
+        return "same", "same_author_similar_offer", "medium"
+    # The user prefers a clean digest over retaining every borderline repost,
+    # but unrelated texts must not be joined merely because the author is same.
+    if score >= 0.58 and len(common) >= 3:
+        return "same", "same_author_same_topic", "low"
+    return "different", "insufficient_offer_overlap", "medium"
 
 
 def _review_prompt(pairs: list[tuple[object, object]]) -> str:
@@ -334,7 +405,7 @@ class _UnionFind:
 
 
 def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
-    """Use tiny, all-or-nothing LLM batches to resolve semantic duplicate pairs."""
+    """Resolve every candidate; free-LLM failure falls back to deterministic rules."""
     _blocked_providers.clear()
     topic_error = ""
     try:
@@ -347,96 +418,86 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
         topic_error = str(exc)
     pairs = _review_pairs(settings.db_path, period)
     if not pairs:
+        with connect(settings.db_path) as con:
+            con.execute(
+                """INSERT OR REPLACE INTO workflow_runs
+                   (period_key,stage,rule_version,status,details,completed_at)
+                   VALUES (?,'semantic_dedupe',?,'complete',?,CURRENT_TIMESTAMP)""",
+                (period, VERSION, json.dumps({"candidate_pairs": 0}, ensure_ascii=False)),
+            )
         return {"topic_items": topic_items, "thematic_pairs": thematic_pairs, "candidate_pairs": 0,
-                "semantic_duplicates": 0, "unresolved_pairs": 0, "provider": "none", "topic_warning": topic_error}
-    decisions: list[dict] = []
-    provider_used = ""
-    # Eight pairs fit comfortably in the free-model response budget and make a
-    # truncated answer harmless: nothing is written until every batch validates.
-    for offset in range(0, len(pairs), 1):
-        batch = pairs[offset:offset + 1]
-        expected = {(left["id"], right["id"]) for left, right in batch}
+                "same_pairs": 0, "semantic_duplicates": 0, "fallback_pairs": 0,
+                "unresolved_pairs": 0, "provider": "none", "topic_warning": topic_error}
+    provider_names: set[str] = set()
+    fallback_count = 0
+    same_count = 0
+    for left, right in pairs:
+        expected = {(left["id"], right["id"])}
         errors: list[str] = []
+        final_status = final_confidence = final_provider = final_reason = ""
         for provider in ("gemini", "openrouter"):
             try:
-                result = _ask_provider(settings, _review_prompt(batch), provider, 768)
+                result = _ask_provider(settings, _review_prompt([(left, right)]), provider, 768)
                 returned = result.get("decisions", [])
                 keys = {(item.get("left"), item.get("right")) for item in returned if isinstance(item, dict)}
                 if keys != expected:
-                    raise ValueError(f"incomplete semantic response: expected {len(expected)} pairs, got {len(keys)}")
-                for item in returned:
-                    item["confidence"] = normalize_confidence(item.get("confidence"))
-                    status = "same" if item.get("same_offer") and item["confidence"] == "high" else ("different" if item["confidence"] == "high" else "uncertain")
-                    with connect(settings.db_path) as con:
-                        con.execute("UPDATE duplicate_reviews SET status=?, confidence=?, provider=? WHERE period_key=? AND left_message_id=? AND right_message_id=?", (status,item["confidence"],provider,period,item["left"],item["right"]))
-                        _rebuild_semantic_duplicates(con, period)
-                        _refresh_review_flags(con, period)
-                decisions.extend(returned)
-                provider_used = provider if not provider_used else provider_used
-                break
-            except Exception as exc:  # individual provider errors are reported only if all fallbacks fail
+                    raise ValueError("incomplete semantic response")
+                item = returned[0]
+                confidence = normalize_confidence(item.get("confidence"))
+                # A low-confidence free-model answer is not allowed to become
+                # unresolved; it is passed to the deterministic arbiter.
+                if confidence == "high":
+                    final_status = "same" if item.get("same_offer") else "different"
+                    final_confidence, final_provider = confidence, provider
+                    final_reason = "llm_same_offer" if final_status == "same" else "llm_distinct_offer"
+                    provider_names.add(provider)
+                    break
+                errors.append(f"{provider}: low-confidence answer")
+            except HTTPError as exc:
+                if exc.code == 429:
+                    _blocked_providers.add(provider)
+                errors.append(f"{provider}: HTTP {exc.code}")
+            except (URLError, TimeoutError, OSError, KeyError,
+                    TypeError, ValueError, json.JSONDecodeError) as exc:
                 errors.append(f"{provider}: {exc}")
-        else:
-            # Do not turn an exhausted free-provider pool into a failed monthly
-            # workflow. No decisions from this run have been written yet, so the
-            # existing pending queue remains intact for editor review.
-            return {"topic_items": topic_items, "thematic_pairs": thematic_pairs,
-                    "candidate_pairs": len(pairs), "semantic_duplicates": 0,
-                    "unresolved_pairs": len(pairs), "provider": "none",
-                    "topic_warning": topic_error, "pair_warning": "; ".join(errors)}
-
-    by_id = {row["id"]: row for pair in pairs for row in pair}
-    groups = _UnionFind()
-    unresolved_ids: set[int] = set()
-    unresolved_pairs = 0
-    decisions_by_pair = {(item["left"], item["right"]): item for item in decisions}
-    for decision in decisions:
-        left, right = decision["left"], decision["right"]
-        if decision.get("same_offer") and decision["confidence"] == "high":
-            groups.join(left, right)
-        else:
-            if decision.get("confidence") != "high":
-                unresolved_pairs += 1
-                unresolved_ids.update((left, right))
-
-    clusters: dict[int, list[int]] = defaultdict(list)
-    for value in groups.parent:
-        clusters[groups.find(value)].append(value)
-    semantic_duplicates = 0
-    with connect(settings.db_path) as con:
-        for (left, right), decision in decisions_by_pair.items():
-            status = "same" if decision.get("same_offer") and decision["confidence"] == "high" else (
-                "different" if decision["confidence"] == "high" else "uncertain"
-            )
+        if not final_status:
+            final_status, final_reason, final_confidence = _deterministic_arbitration(left, right)
+            final_provider = "rule"
+            provider_names.add("rule")
+            fallback_count += 1
+        with connect(settings.db_path) as con:
             con.execute(
-                """UPDATE duplicate_reviews SET status=?, confidence=?, provider=?
+                """UPDATE duplicate_reviews SET status=?,confidence=?,provider=?,
+                   reason_code=?,reason_detail=?,rule_version=?,decided_at=CURRENT_TIMESTAMP
                    WHERE period_key=? AND left_message_id=? AND right_message_id=?""",
-                (status, decision["confidence"], provider_used, period, left, right),
+                (final_status, final_confidence, final_provider, final_reason,
+                 "; ".join(errors)[:800] or None, VERSION, period,
+                 left["id"], right["id"]),
             )
-        # A high-confidence "different" decision clears the preliminary review
-        # flag; low/medium decisions remain visible for a human editor.
-        candidate_ids = {row["id"] for pair in pairs for row in pair}
-        for message_id in candidate_ids:
-            con.execute(
-                "UPDATE entries SET needs_duplicate_review=? WHERE message_id=? AND excluded_reason IS NULL",
-                (int(message_id in unresolved_ids), message_id),
-            )
-        for member_ids in clusters.values():
-            if len(member_ids) < 2:
-                continue
-            keeper = _canonical([by_id[value] for value in member_ids])
-            for message_id in member_ids:
-                if message_id == keeper["id"]:
-                    continue
-                con.execute(
-                    """UPDATE entries SET eligible=0, excluded_reason='duplicate', duplicate_of=?,
-                       dedupe_reason='semantic same author', dedupe_confidence=0.95,
-                       dedupe_version=?, needs_duplicate_review=0 WHERE message_id=?""",
-                    (keeper["id"], VERSION, message_id),
-                )
-                semantic_duplicates += 1
-    return {"topic_items": topic_items, "thematic_pairs": thematic_pairs, "candidate_pairs": len(pairs), "semantic_duplicates": semantic_duplicates,
-            "unresolved_pairs": unresolved_pairs, "provider": provider_used, "topic_warning": topic_error, "pair_warning": ""}
+        same_count += int(final_status == "same")
+    with connect(settings.db_path) as con:
+        # Pair decisions were checkpointed one by one. Rebuilding once keeps the
+        # weak-phone path linear enough without sacrificing crash recovery.
+        _rebuild_semantic_duplicates(con, period)
+        _refresh_review_flags(con, period)
+        semantic_duplicates = con.execute(
+            """SELECT COUNT(*) FROM entries WHERE period_key=?
+               AND dedupe_reason LIKE 'semantic same author%'""", (period,)
+        ).fetchone()[0]
+        con.execute(
+            """INSERT OR REPLACE INTO workflow_runs
+               (period_key,stage,rule_version,status,details,completed_at)
+               VALUES (?,'semantic_dedupe',?,'complete',?,CURRENT_TIMESTAMP)""",
+            (period, VERSION, json.dumps({
+                "candidate_pairs": len(pairs), "same_pairs": same_count,
+                "fallback_pairs": fallback_count,
+            }, ensure_ascii=False),),
+        )
+    return {"topic_items": topic_items, "thematic_pairs": thematic_pairs,
+            "candidate_pairs": len(pairs), "same_pairs": same_count,
+            "semantic_duplicates": semantic_duplicates, "fallback_pairs": fallback_count,
+            "unresolved_pairs": 0, "provider": "+".join(sorted(provider_names)) or "none",
+            "topic_warning": topic_error}
 
 
 def review_report(db_path, period: str) -> str:
@@ -523,16 +584,50 @@ def _rebuild_semantic_duplicates(con, period: str) -> None:
     ).fetchall()
     union = _UnionFind()
     involved: set[int] = set()
+    pair_ids = {
+        value for pair in pairs
+        for value in (pair["left_message_id"], pair["right_message_id"])
+    }
+    texts = {}
+    if pair_ids:
+        texts = {
+            row["id"]: row
+            for row in con.execute(
+                """SELECT id,message_id,published_at,source_text FROM messages
+                   WHERE id IN (%s)""" % ",".join("?" for _ in pair_ids),
+                tuple(pair_ids),
+            )
+        }
     for pair in pairs:
+        # Guard against transitive A~B~C over-merging. Every member of the two
+        # prospective clusters must be compatible with every member of the
+        # other cluster according to explicit stop features.
+        left_root, right_root = union.find(pair["left_message_id"]), union.find(pair["right_message_id"])
+        if left_root == right_root:
+            involved.update((pair["left_message_id"], pair["right_message_id"]))
+            continue
+        left_members = [value for value in union.parent if union.find(value) == left_root]
+        right_members = [value for value in union.parent if union.find(value) == right_root]
+        conflict = any(
+            _deterministic_arbitration(texts[left], texts[right])[1]
+            in {"intent_conflict", "explicit_date_conflict", "explicit_route_conflict"}
+            for left in left_members for right in right_members
+        )
+        if conflict:
+            con.execute(
+                """UPDATE duplicate_reviews SET status='different',
+                   reason_code='cluster_stop_feature',
+                   reason_detail='transitive merge rejected by explicit stop feature',
+                   rule_version=?,decided_at=CURRENT_TIMESTAMP
+                   WHERE period_key=? AND left_message_id=? AND right_message_id=?""",
+                (VERSION, period, pair["left_message_id"], pair["right_message_id"]),
+            )
+            continue
         union.join(pair["left_message_id"], pair["right_message_id"])
         involved.update((pair["left_message_id"], pair["right_message_id"]))
     if not involved:
         return
-    rows = con.execute(
-        """SELECT id, message_id, published_at FROM messages WHERE id IN (%s)"""
-        % ",".join("?" for _ in involved),
-        tuple(involved),
-    ).fetchall()
+    rows = [texts[value] for value in involved]
     by_id = {row["id"]: row for row in rows}
     clusters: dict[int, list[int]] = defaultdict(list)
     for message_id in involved:
