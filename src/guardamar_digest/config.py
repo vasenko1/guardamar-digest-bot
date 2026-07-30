@@ -31,6 +31,7 @@ class Settings:
     gemini_model: str
     openrouter_key: str
     openrouter_model: str
+    excluded_sender_ids: frozenset[str]
 
 
 def settings() -> Settings:
@@ -46,4 +47,5 @@ def settings() -> Settings:
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
         openrouter_key=os.getenv("OPENROUTER_API_KEY", ""),
         openrouter_model=os.getenv("OPENROUTER_MODEL", "openrouter/free"),
+        excluded_sender_ids=frozenset(x.strip() for x in os.getenv("EXCLUDED_SENDER_IDS", "").split(",") if x.strip()),
     )

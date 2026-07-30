@@ -563,3 +563,11 @@ def exclude_messages(db_path, period: str, message_ids: list[int], reason: str) 
             changed += 1
         _refresh_review_flags(con, period)
     return changed
+
+
+def exclude_senders(db_path, period: str, sender_ids: set[str]) -> int:
+    if not sender_ids: return 0
+    with connect(db_path) as con:
+        marks=",".join("?" for _ in sender_ids)
+        result=con.execute(f"UPDATE entries SET eligible=0, excluded_reason='excluded author', needs_duplicate_review=0 WHERE period_key=? AND message_id IN (SELECT id FROM messages WHERE sender_id IN ({marks}))", (period,*sender_ids))
+    return result.rowcount
