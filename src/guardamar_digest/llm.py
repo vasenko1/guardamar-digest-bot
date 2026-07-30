@@ -69,6 +69,10 @@ def prompt(rows: list[dict], categories: list[dict] | None = None) -> str:
 """ + ("Используй ТОЛЬКО этот план категорий: " + json.dumps(categories, ensure_ascii=False) + "\n" if categories else "") + "Данные:\n" + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
 
 
+def plan_prompt(rows: list[dict]) -> str:
+    return "Верни ТОЛЬКО JSON: {\"categories\":[{\"code\":\"...\",\"title\":\"...\",\"emoji\":\"...\"}]}. Создай широкие категории только для объявлений текущего месяца. Данные:\n" + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+
+
 def classify(settings: Settings, period: str) -> str:
     with connect(settings.db_path) as con:
         records = con.execute(
@@ -81,6 +85,21 @@ def classify(settings: Settings, period: str) -> str:
     if not rows:
         return "nothing to classify"
     fixed_categories = None
+    # The category plan is cheap: all texts are shortened and no per-entry
+    # output is requested. It prevents the first batch from defining the month.
+    plan_rows = [{"id": row["id"], "text": row["text"][:150]} for row in rows]
+    for provider in ("gemini", "openrouter"):
+      try:
+        content=plan_prompt(plan_rows)
+        if provider=="gemini" and settings.gemini_key:
+          raw=_post(f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_key}",{"Content-Type":"application/json"},{"contents":[{"parts":[{"text":content}]}],"generationConfig":{"responseMimeType":"application/json","maxOutputTokens":1024}}); result=_json(raw["candidates"][0]["content"]["parts"][0]["text"])
+        elif provider=="openrouter" and settings.openrouter_key:
+          raw=_post("https://openrouter.ai/api/v1/chat/completions",{"Content-Type":"application/json","Authorization":f"Bearer {settings.openrouter_key}"},{"model":settings.openrouter_model,"messages":[{"role":"user","content":content}],"response_format":{"type":"json_object"},"max_tokens":1024}); result=_json(raw["choices"][0]["message"]["content"])
+        else: continue
+        fixed_categories=[c for c in result.get("categories",[]) if isinstance(c,dict) and c.get("code") and c.get("title")]
+        if fixed_categories: break
+      except Exception: continue
+    if not fixed_categories: raise RuntimeError("Could not create category plan with free LLM providers")
     provider_used = []
     all_entries = []
     for offset in range(0, len(rows), 8):
@@ -105,9 +124,9 @@ def classify(settings: Settings, period: str) -> str:
                 raise ValueError(
                     f"incomplete model response: expected {len(expected_ids)} entries, got {len(returned_ids)}"
                 )
-            if fixed_categories is None:
-                fixed_categories = list(categories.values())
-            all_entries.extend((entry, categories, provider) for entry in returned)
+            fixed_map={c["code"]:c for c in fixed_categories}
+            if any(entry.get("category") not in fixed_map for entry in returned): raise ValueError("model used a category outside the fixed plan")
+            all_entries.extend((entry, fixed_map, provider) for entry in returned)
             provider_used.append(provider); break
         except HTTPError as exc:
             errors.append(f"{provider}: HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:800]}")
