@@ -18,6 +18,19 @@ STOP_WORDS = {
     "una", "por", "con", "del", "las", "los", "есть", "будет", "можно",
 }
 
+CONFIDENCE_MAP = {
+    "high": "high", "high confidence": "high", "высокая": "high", "высокий": "high", "высоко": "high",
+    "medium": "medium", "medium confidence": "medium", "средняя": "medium", "средний": "medium", "средне": "medium",
+    "low": "low", "low confidence": "low", "низкая": "low", "низкий": "low", "низко": "low",
+}
+
+
+def confidence(value: object) -> str:
+    """Free models sometimes localize enum values despite the JSON instruction."""
+    if not isinstance(value, str):
+        return "low"
+    return CONFIDENCE_MAP.get(value.strip().casefold(), "low")
+
 
 def normalized(text: str) -> str:
     text = unicodedata.normalize("NFKC", text).casefold()
@@ -247,8 +260,7 @@ def discover_topics(settings, period: str) -> tuple[int, int]:
                             raise ValueError("topic response has invalid intent")
                         if not isinstance(item.get("offer_key"), str) or not item["offer_key"].strip():
                             raise ValueError("topic response has empty offer_key")
-                        if item.get("confidence") not in {"high", "medium", "low"}:
-                            raise ValueError("topic response has invalid confidence")
+                        item["confidence"] = confidence(item.get("confidence"))
                     by_id = {row["id"]: row for row in window}
                     annotations.extend((by_id[item["id"]], item["intent"], item["offer_key"].strip().casefold(), item["confidence"], provider) for item in items)
                     providers.append(provider)
@@ -324,8 +336,8 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
                 keys = {(item.get("left"), item.get("right")) for item in returned if isinstance(item, dict)}
                 if keys != expected:
                     raise ValueError(f"incomplete semantic response: expected {len(expected)} pairs, got {len(keys)}")
-                if any(item.get("confidence") not in {"high", "medium", "low"} for item in returned):
-                    raise ValueError("semantic response has an invalid confidence")
+                for item in returned:
+                    item["confidence"] = confidence(item.get("confidence"))
                 decisions.extend(returned)
                 provider_used = provider if not provider_used else provider_used
                 break
