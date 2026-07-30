@@ -196,23 +196,19 @@ def _review_prompt(pairs: list[tuple[object, object]]) -> str:
 def _ask_provider(settings, content: str, provider: str, max_tokens: int) -> dict:
     if provider in _blocked_providers:
         raise ProviderTemporarilyBlocked(f"{provider} temporarily rate-limited")
-    if provider == "gemini" and settings.gemini_key:
-        raw = _post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_key}",
-            {"Content-Type": "application/json"},
-            {"contents": [{"parts": [{"text": content}]}],
-             "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": max_tokens}},
-        )
-        return _json(raw["candidates"][0]["content"]["parts"][0]["text"])
-    if provider == "openrouter" and settings.openrouter_key:
-        raw = _post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            {"Content-Type": "application/json", "Authorization": f"Bearer {settings.openrouter_key}"},
-            {"model": settings.openrouter_model, "messages": [{"role": "user", "content": content}],
-             "response_format": {"type": "json_object"}, "max_tokens": max_tokens},
-        )
-        return _json(raw["choices"][0]["message"]["content"])
-    raise ValueError(f"{provider} API key is not configured")
+    for attempt in range(2):
+        try:
+            if provider == "gemini" and settings.gemini_key:
+                raw = _post(f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_key}", {"Content-Type": "application/json"}, {"contents": [{"parts": [{"text": content}]}], "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": max_tokens}})
+                return _json(raw["candidates"][0]["content"]["parts"][0].get("text"))
+            if provider == "openrouter" and settings.openrouter_key:
+                raw = _post("https://openrouter.ai/api/v1/chat/completions", {"Content-Type": "application/json", "Authorization": f"Bearer {settings.openrouter_key}"}, {"model": settings.openrouter_model, "messages": [{"role": "user", "content": content}], "response_format": {"type": "json_object"}, "max_tokens": max_tokens})
+                return _json(raw["choices"][0]["message"].get("content"))
+            raise ValueError(f"{provider} API key is not configured")
+        except (KeyError, TypeError, ValueError):
+            if attempt:
+                raise
+    raise RuntimeError("unreachable")
 
 
 def _topic_prompt(rows: list[object]) -> str:
@@ -286,7 +282,7 @@ def discover_topics(settings, period: str) -> tuple[int, int]:
                     if exc.code == 429:
                         _blocked_providers.add(provider)
                     errors.append(f"{provider}: HTTP {exc.code}")
-                except (URLError, TimeoutError, OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+                except (URLError, TimeoutError, OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
                     errors.append(f"{provider}: {exc}")
             else:
                 raise RuntimeError("; ".join(errors))

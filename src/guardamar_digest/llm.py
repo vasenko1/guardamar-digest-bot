@@ -47,7 +47,9 @@ def _post(url: str, headers: dict[str, str], body: dict) -> dict:
     raise RuntimeError("unreachable")
 
 
-def _json(text: str) -> dict:
+def _json(text: object) -> dict:
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("model response has no text content")
     fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
     candidate = fenced.group(1) if fenced else text.strip()
     value, _ = json.JSONDecoder().raw_decode(candidate)
