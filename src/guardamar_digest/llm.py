@@ -58,7 +58,7 @@ def _json(text: object) -> dict:
     return value
 
 
-def prompt(rows: list[dict]) -> str:
+def prompt(rows: list[dict], categories: list[dict] | None = None) -> str:
     return """Ты редактор ежемесячного Telegram-дайджеста городской группы Гуардамар.
 Верни ТОЛЬКО JSON: {\"categories\":[{\"code\":\"...\",\"title\":\"...\",\"emoji\":\"...\"}],\"entries\":[{\"id\":1,\"include\":true,\"category\":\"...\",\"title\":\"...\",\"confidence\":\"high|low\"}]}.
 Создай только широкие категории, нужные этому месяцу. Одна строка — одно объявление.
@@ -66,7 +66,7 @@ def prompt(rows: list[dict]) -> str:
 Не включай цену, контакты, URL, рекламные эпитеты. Предпочитай важные факты: формат, дата, маршрут, срок, спальни, район, бренд.
 Старайся сделать title до 34 символов, но не удаляй существенный факт ради длины. Не дублируй буквальные title в одной категории.
 Исключи ответы, обсуждения, сервисные сообщения и сообщения без самостоятельного объявления.
-Данные:\n""" + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+""" + ("Используй ТОЛЬКО этот план категорий: " + json.dumps(categories, ensure_ascii=False) + "\n" if categories else "") + "Данные:\n" + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
 
 
 def classify(settings: Settings, period: str) -> str:
@@ -80,39 +80,43 @@ def classify(settings: Settings, period: str) -> str:
     rows = [{"id": r["id"], "text": re.sub(r"https?://\S+|\+?\d[\d ()-]{7,}", "", r["source_text"])[:420]} for r in records]
     if not rows:
         return "nothing to classify"
-    content = prompt(rows)
-    errors = []
-    for provider in ("gemini", "openrouter"):
+    fixed_categories = None
+    provider_used = []
+    all_entries = []
+    for offset in range(0, len(rows), 8):
+      batch = rows[offset:offset + 8]
+      errors = []
+      for provider in ("gemini", "openrouter"):
         try:
+            content = prompt(batch, fixed_categories)
             if provider == "gemini" and settings.gemini_key:
-                raw = _post(f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_key}", {"Content-Type":"application/json"}, {"contents":[{"parts":[{"text":content}]}], "generationConfig":{"responseMimeType":"application/json", "maxOutputTokens":32768}})
+                raw = _post(f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_key}", {"Content-Type":"application/json"}, {"contents":[{"parts":[{"text":content}]}], "generationConfig":{"responseMimeType":"application/json", "maxOutputTokens":2048}})
                 result = _json(raw["candidates"][0]["content"]["parts"][0]["text"])
             elif provider == "openrouter" and settings.openrouter_key:
-                raw = _post("https://openrouter.ai/api/v1/chat/completions", {"Content-Type":"application/json", "Authorization":f"Bearer {settings.openrouter_key}"}, {"model":settings.openrouter_model,"messages":[{"role":"user","content":content}],"response_format":{"type":"json_object"},"max_tokens":32768})
+                raw = _post("https://openrouter.ai/api/v1/chat/completions", {"Content-Type":"application/json", "Authorization":f"Bearer {settings.openrouter_key}"}, {"model":settings.openrouter_model,"messages":[{"role":"user","content":content}],"response_format":{"type":"json_object"},"max_tokens":2048})
                 result = _json(raw["choices"][0]["message"]["content"])
             else:
                 continue
             categories = {c["code"]: c for c in result.get("categories", [])}
             returned = result.get("entries", [])
-            expected_ids = {row["id"] for row in rows}
+            expected_ids = {row["id"] for row in batch}
             returned_ids = {entry.get("id") for entry in returned if isinstance(entry, dict)}
             if not returned or returned_ids != expected_ids:
                 raise ValueError(
                     f"incomplete model response: expected {len(expected_ids)} entries, got {len(returned_ids)}"
                 )
-            with connect(settings.db_path) as con:
-                for entry in returned:
-                    if not isinstance(entry.get("title"), str) or not entry["title"].strip():
-                        raise ValueError(f"missing title for entry {entry.get('id')}")
-                    category = categories.get(entry.get("category"), {"title":"Другое","emoji":"📦"})
-                    con.execute(
-                        "UPDATE entries SET eligible=?,category_code=?,category_title=?,category_emoji=?,short_title=?,confidence=?,provider=? "
-                        "WHERE message_id=? AND period_key=?",
-                        (int(bool(entry.get("include"))), entry.get("category"), category.get("title"), category.get("emoji"), entry.get("title"), entry.get("confidence"), provider, entry.get("id"), period),
-                    )
-            return provider
+            if fixed_categories is None:
+                fixed_categories = list(categories.values())
+            all_entries.extend((entry, categories, provider) for entry in returned)
+            provider_used.append(provider); break
         except HTTPError as exc:
             errors.append(f"{provider}: HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:800]}")
         except (IncompleteRead, JSONDecodeError, KeyError, ValueError, URLError, TimeoutError, OSError) as exc:
             errors.append(f"{provider}: {exc}")
-    raise RuntimeError("; ".join(errors) or "No LLM API key configured")
+      else: raise RuntimeError("; ".join(errors) or "No LLM API key configured")
+    with connect(settings.db_path) as con:
+      for entry, categories, provider in all_entries:
+        if not isinstance(entry.get("title"), str) or not entry["title"].strip(): raise ValueError(f"missing title for entry {entry.get('id')}")
+        category=categories.get(entry.get("category"), {"title":"Другое","emoji":"📦"})
+        con.execute("UPDATE entries SET eligible=?,category_code=?,category_title=?,category_emoji=?,short_title=?,confidence=?,provider=? WHERE message_id=? AND period_key=?", (int(bool(entry.get("include"))),entry.get("category"),category.get("title"),category.get("emoji"),entry.get("title"),entry.get("confidence"),provider,entry.get("id"),period))
+    return "+".join(sorted(set(provider_used)))
