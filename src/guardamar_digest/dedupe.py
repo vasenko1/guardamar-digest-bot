@@ -59,6 +59,7 @@ def dedupe(db_path, period: str) -> dict[str, int]:
             (period,),
         )
         con.execute("DELETE FROM duplicate_reviews WHERE period_key=?", (period,))
+        con.execute("DELETE FROM dedupe_topics WHERE period_key=?", (period,))
         con.execute(
             """UPDATE entries SET eligible=1, category_code=NULL, category_title=NULL,
                category_emoji=NULL, short_title=NULL, confidence=NULL, provider=NULL
@@ -186,6 +187,101 @@ def _ask_provider(settings, content: str, provider: str) -> dict:
     raise ValueError(f"{provider} API key is not configured")
 
 
+def _topic_prompt(rows: list[object]) -> str:
+    data = [{"id": row["id"], "text": URL_OR_CONTACT.sub(" ", row["source_text"])[:700]} for row in rows]
+    return """Ты определяешь, какие объявления ОДНОГО автора за месяц рекламируют
+одно и то же предложение. Верни ТОЛЬКО JSON:
+{\"items\":[{\"id\":1,\"intent\":\"offer|search|event|other\",
+\"offer_key\":\"короткий_ключ\",\"confidence\":\"high|medium|low\"}]}.
+
+Одинаковый `offer_key` ставь только одному продолжающемуся рекламному потоку:
+повторы услуги, одного поиска, мероприятия или меню одного продавца. Разные
+квартиры, машины, маршруты, даты/события, услуги, товары и запросы получают
+разные `offer_key`, даже если широкая тема одинакова. «Предлагаю» и «ищу» —
+разные intent. Если сомневаешься, сделай ключ уникальным. Не добавляй и не
+    пропускай id. Тексты очищены от контактов и ссылок. Данные:\n""" + json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def discover_topics(settings, period: str) -> tuple[int, int]:
+    """Find same-offer candidates even when their wording has little overlap."""
+    with connect(settings.db_path) as con:
+        rows = con.execute(
+            """SELECT m.id, m.sender_id, m.published_at, m.message_id, m.source_text
+               FROM messages m JOIN entries e ON e.message_id=m.id
+               WHERE e.period_key=? AND e.excluded_reason IS NULL AND m.sender_id IS NOT NULL
+                 AND m.sender_id<>'' ORDER BY m.sender_id, m.published_at, m.message_id""",
+            (period,),
+        ).fetchall()
+    by_author: dict[str, list] = defaultdict(list)
+    for row in rows:
+        by_author[row["sender_id"]].append(row)
+    annotations: list[tuple[object, str, str, str, str]] = []
+    providers: list[str] = []
+    # Keeping an author's messages together lets the model distinguish two
+    # listings from repeated advertising. Most authors have only a few posts.
+    for author_rows in by_author.values():
+        if len(author_rows) == 1:
+            continue
+        if len(author_rows) > 24:
+            # Large-volume publishers are riskier. Overlapping windows preserve
+            # local context; their cross-window matches stay for editor review.
+            windows = [author_rows[index:index + 24] for index in range(0, len(author_rows), 20)]
+        else:
+            windows = [author_rows]
+        for window in windows:
+            expected = {row["id"] for row in window}
+            errors: list[str] = []
+            for provider in ("gemini", "openrouter"):
+                try:
+                    result = _ask_provider(settings, _topic_prompt(window), provider)
+                    items = result.get("items", [])
+                    returned = {item.get("id") for item in items if isinstance(item, dict)}
+                    if returned != expected:
+                        raise ValueError(f"incomplete topic response: expected {len(expected)} items, got {len(returned)}")
+                    for item in items:
+                        if item.get("intent") not in {"offer", "search", "event", "other"}:
+                            raise ValueError("topic response has invalid intent")
+                        if not isinstance(item.get("offer_key"), str) or not item["offer_key"].strip():
+                            raise ValueError("topic response has empty offer_key")
+                        if item.get("confidence") not in {"high", "medium", "low"}:
+                            raise ValueError("topic response has invalid confidence")
+                    by_id = {row["id"]: row for row in window}
+                    annotations.extend((by_id[item["id"]], item["intent"], item["offer_key"].strip().casefold(), item["confidence"], provider) for item in items)
+                    providers.append(provider)
+                    break
+                except Exception as exc:
+                    errors.append(f"{provider}: {exc}")
+            else:
+                raise RuntimeError("; ".join(errors))
+    # Overlapping windows for a very prolific author may annotate a boundary
+    # message twice. Keep the last complete annotation, never make a self-pair.
+    annotation_by_id = {item[0]["id"]: item for item in annotations}
+    annotations = list(annotation_by_id.values())
+    with connect(settings.db_path) as con:
+        for row, intent, offer_key, confidence, provider in annotations:
+            con.execute(
+                """INSERT OR REPLACE INTO dedupe_topics
+                   (period_key,message_id,intent,offer_key,confidence,provider) VALUES (?,?,?,?,?,?)""",
+                (period, row["id"], intent, offer_key, confidence, provider),
+            )
+        grouped: dict[tuple[str, str, str], list[object]] = defaultdict(list)
+        for row, intent, offer_key, confidence, provider in annotations:
+            if confidence != "low":
+                grouped[(row["sender_id"], intent, offer_key)].append(row)
+        created = 0
+        for group_rows in grouped.values():
+            group_rows.sort(key=lambda row: (row["published_at"], row["message_id"]))
+            # Adjacent links form a transitive campaign and avoid quadratic cost.
+            for left, right in zip(group_rows, group_rows[1:]):
+                result = con.execute(
+                    """INSERT OR IGNORE INTO duplicate_reviews
+                       (period_key,left_message_id,right_message_id,lexical_score) VALUES (?,?,?,0)""",
+                    (period, min(left["id"], right["id"]), max(left["id"], right["id"])),
+                )
+                created += result.rowcount
+    return len(annotations), created
+
+
 class _UnionFind:
     def __init__(self) -> None:
         self.parent: dict[int, int] = {}
@@ -204,9 +300,11 @@ class _UnionFind:
 
 def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
     """Use tiny, all-or-nothing LLM batches to resolve semantic duplicate pairs."""
+    topic_items, thematic_pairs = discover_topics(settings, period)
     pairs = _review_pairs(settings.db_path, period)
     if not pairs:
-        return {"candidate_pairs": 0, "semantic_duplicates": 0, "unresolved_pairs": 0, "provider": "none"}
+        return {"topic_items": topic_items, "thematic_pairs": thematic_pairs, "candidate_pairs": 0,
+                "semantic_duplicates": 0, "unresolved_pairs": 0, "provider": "none"}
     decisions: list[dict] = []
     provider_used = ""
     # Eight pairs fit comfortably in the free-model response budget and make a
@@ -282,7 +380,7 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
                     (keeper["id"], VERSION, message_id),
                 )
                 semantic_duplicates += 1
-    return {"candidate_pairs": len(pairs), "semantic_duplicates": semantic_duplicates,
+    return {"topic_items": topic_items, "thematic_pairs": thematic_pairs, "candidate_pairs": len(pairs), "semantic_duplicates": semantic_duplicates,
             "unresolved_pairs": unresolved_pairs, "provider": provider_used}
 
 
