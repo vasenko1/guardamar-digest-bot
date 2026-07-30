@@ -9,6 +9,7 @@ data/
 *.db-shm
 *.db-wal
 logs/
+state/
 
 # Python and Termux environments
 __pycache__/

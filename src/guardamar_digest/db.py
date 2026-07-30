@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS messages (
   message_id INTEGER NOT NULL,
   published_at TEXT NOT NULL,
   sender_name TEXT,
+  sender_id TEXT,
   source_text TEXT NOT NULL,
   source_url TEXT NOT NULL,
   media_type TEXT,
@@ -33,9 +34,13 @@ CREATE TABLE IF NOT EXISTS entries (
   provider TEXT,
   manual_title TEXT,
   manual_category TEXT,
-  excluded_reason TEXT
+  excluded_reason TEXT,
+  duplicate_of INTEGER REFERENCES messages(id),
+  dedupe_reason TEXT,
+  dedupe_confidence REAL,
+  dedupe_version TEXT,
+  needs_duplicate_review INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS entries_period ON entries(period_key);
 CREATE TABLE IF NOT EXISTS publications (
   period_key TEXT NOT NULL,
   destination TEXT NOT NULL,
@@ -48,6 +53,27 @@ CREATE TABLE IF NOT EXISTS publications (
 """
 
 
+def _add_column_if_missing(con: sqlite3.Connection, table: str, definition: str) -> None:
+    name = definition.split()[0]
+    columns = {row["name"] for row in con.execute(f"PRAGMA table_info({table})")}
+    if name not in columns:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+
+
+def migrate(con: sqlite3.Connection) -> None:
+    # SQLite CREATE TABLE does not update an existing table. These migrations make
+    # phone databases created by earlier MVP versions compatible without data loss.
+    _add_column_if_missing(con, "messages", "sender_id TEXT")
+    _add_column_if_missing(con, "entries", "duplicate_of INTEGER")
+    _add_column_if_missing(con, "entries", "dedupe_reason TEXT")
+    _add_column_if_missing(con, "entries", "dedupe_confidence REAL")
+    _add_column_if_missing(con, "entries", "dedupe_version TEXT")
+    _add_column_if_missing(con, "entries", "needs_duplicate_review INTEGER NOT NULL DEFAULT 0")
+    con.execute("CREATE INDEX IF NOT EXISTS entries_period ON entries(period_key)")
+    con.execute("CREATE INDEX IF NOT EXISTS messages_sender_period ON messages(sender_id, published_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS entries_duplicate_review ON entries(period_key, needs_duplicate_review)")
+
+
 @contextmanager
 def connect(path: Path) -> Iterator[sqlite3.Connection]:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,6 +81,7 @@ def connect(path: Path) -> Iterator[sqlite3.Connection]:
     con.row_factory = sqlite3.Row
     try:
         con.executescript(SCHEMA)
+        migrate(con)
         yield con
         con.commit()
     finally:

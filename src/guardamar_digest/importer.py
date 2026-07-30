@@ -51,10 +51,15 @@ def import_export(db_path: Path, export_path: Path, period: str, chat_id: str, u
             if not text:
                 continue
             con.execute(
-                """INSERT OR IGNORE INTO messages
-                (chat_id,message_id,published_at,sender_name,source_text,source_url,media_type,media_group_id)
-                VALUES (?,?,?,?,?,?,?,?)""",
-                (chat_id, item["id"], item["date"], item.get("from", ""), text,
+                """INSERT INTO messages
+                (chat_id,message_id,published_at,sender_name,sender_id,source_text,source_url,media_type,media_group_id)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(chat_id,message_id) DO UPDATE SET
+                  published_at=excluded.published_at, sender_name=excluded.sender_name,
+                  sender_id=excluded.sender_id, source_text=excluded.source_text,
+                  source_url=excluded.source_url, media_type=excluded.media_type,
+                  media_group_id=excluded.media_group_id""",
+                (chat_id, item["id"], item["date"], item.get("from", ""), item.get("from_id", ""), text,
                  source_url(username, item["id"]), item.get("media_type"), item.get("media_group_id")),
             )
             row = con.execute("SELECT id FROM messages WHERE chat_id=? AND message_id=?", (chat_id, item["id"])).fetchone()

@@ -42,7 +42,8 @@ def classify(settings: Settings, period: str) -> str:
     with connect(settings.db_path) as con:
         records = con.execute(
             "SELECT m.id, m.source_text FROM messages m JOIN entries e ON e.message_id=m.id "
-            "WHERE e.period_key=? AND e.manual_title IS NULL ORDER BY m.message_id",
+            "WHERE e.period_key=? AND e.manual_title IS NULL AND e.excluded_reason IS NULL "
+            "AND e.needs_duplicate_review=0 ORDER BY m.message_id",
             (period,),
         ).fetchall()
     rows = [{"id": r["id"], "text": re.sub(r"https?://\S+|\+?\d[\d ()-]{7,}", "", r["source_text"])[:420]} for r in records]
