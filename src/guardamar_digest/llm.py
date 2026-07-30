@@ -57,8 +57,17 @@ def classify(settings: Settings, period: str) -> str:
             else:
                 continue
             categories = {c["code"]: c for c in result.get("categories", [])}
+            returned = result.get("entries", [])
+            expected_ids = {row["id"] for row in rows}
+            returned_ids = {entry.get("id") for entry in returned if isinstance(entry, dict)}
+            if not returned or returned_ids != expected_ids:
+                raise ValueError(
+                    f"incomplete model response: expected {len(expected_ids)} entries, got {len(returned_ids)}"
+                )
             with connect(settings.db_path) as con:
-                for entry in result.get("entries", []):
+                for entry in returned:
+                    if not isinstance(entry.get("title"), str) or not entry["title"].strip():
+                        raise ValueError(f"missing title for entry {entry.get('id')}")
                     category = categories.get(entry.get("category"), {"title":"Другое","emoji":"📦"})
                     con.execute(
                         "UPDATE entries SET eligible=?,category_code=?,category_title=?,category_emoji=?,short_title=?,confidence=?,provider=? "
