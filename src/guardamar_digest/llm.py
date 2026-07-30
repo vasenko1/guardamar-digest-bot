@@ -4,6 +4,8 @@ import json
 import random
 import re
 import time
+import hashlib
+import uuid
 from http.client import IncompleteRead
 from json import JSONDecodeError
 from urllib.error import HTTPError
@@ -88,11 +90,14 @@ def classify(settings: Settings, period: str) -> str:
     rows = [{"id": r["id"], "text": re.sub(r"https?://\S+|\+?\d[\d ()-]{7,}", "", r["source_text"])[:420]} for r in records]
     if not rows:
         return "nothing to classify"
-    fixed_categories = None
+    signature=hashlib.sha256(json.dumps(rows,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+    with connect(settings.db_path) as con:
+        run=con.execute("SELECT * FROM classification_runs WHERE period_key=?",(period,)).fetchone()
+    fixed_categories = json.loads(run["categories_json"]) if run and run["input_signature"]==signature else None
     # The category plan is cheap: all texts are shortened and no per-entry
     # output is requested. It prevents the first batch from defining the month.
     plan_rows = [{"id": row["id"], "text": row["text"][:150]} for row in rows]
-    for provider in ("gemini", "openrouter"):
+    for provider in (() if fixed_categories else ("gemini", "openrouter")):
       try:
         content=plan_prompt(plan_rows)
         if provider=="gemini" and settings.gemini_key:
@@ -104,10 +109,19 @@ def classify(settings: Settings, period: str) -> str:
         if fixed_categories: break
       except Exception: continue
     if not fixed_categories: raise RuntimeError("Could not create category plan with free LLM providers")
+    if not run or run["input_signature"]!=signature:
+      run_id=uuid.uuid4().hex
+      with connect(settings.db_path) as con:
+        con.execute("INSERT OR REPLACE INTO classification_runs(period_key,run_id,input_signature,categories_json,status,lock_until) VALUES (?,?,?,?, 'running', datetime('now','+20 minutes'))",(period,run_id,signature,json.dumps(fixed_categories,ensure_ascii=False)))
+        con.execute("UPDATE entries SET category_code=NULL,category_title=NULL,category_emoji=NULL,short_title=NULL,confidence=NULL,provider=NULL,classification_run_id=NULL WHERE period_key=? AND manual_title IS NULL",(period,))
+    else: run_id=run["run_id"]
     provider_used = []
     all_entries = []
+    with connect(settings.db_path) as con:
+      done={r["message_id"] for r in con.execute("SELECT message_id FROM entries WHERE period_key=? AND classification_run_id=?",(period,run_id))}
     for offset in range(0, len(rows), 1):
       batch = rows[offset:offset + 1]
+      if batch[0]["id"] in done: continue
       errors = []
       for provider in ("gemini", "openrouter"):
         try:
@@ -130,7 +144,11 @@ def classify(settings: Settings, period: str) -> str:
                 )
             fixed_map={c["code"]:c for c in fixed_categories}
             if any(entry.get("category") not in fixed_map for entry in returned): raise ValueError("model used a category outside the fixed plan")
-            all_entries.extend((entry, fixed_map, provider) for entry in returned)
+            with connect(settings.db_path) as con:
+              entry=returned[0]
+              if not isinstance(entry.get("title"),str) or not entry["title"].strip(): raise ValueError("model response has empty title")
+              category=fixed_map[entry["category"]]
+              con.execute("UPDATE entries SET eligible=?,category_code=?,category_title=?,category_emoji=?,short_title=?,confidence=?,provider=?,classification_run_id=? WHERE message_id=? AND period_key=?",(int(bool(entry.get("include"))),entry["category"],category.get("title"),category.get("emoji"),entry.get("title"),entry.get("confidence"),provider,run_id,entry["id"],period))
             provider_used.append(provider); break
         except HTTPError as exc:
             errors.append(f"{provider}: HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:800]}")
@@ -138,8 +156,5 @@ def classify(settings: Settings, period: str) -> str:
             errors.append(f"{provider}: {exc}")
       else: raise RuntimeError("; ".join(errors) or "No LLM API key configured")
     with connect(settings.db_path) as con:
-      for entry, categories, provider in all_entries:
-        if not isinstance(entry.get("title"), str) or not entry["title"].strip(): raise ValueError(f"missing title for entry {entry.get('id')}")
-        category=categories.get(entry.get("category"), {"title":"Другое","emoji":"📦"})
-        con.execute("UPDATE entries SET eligible=?,category_code=?,category_title=?,category_emoji=?,short_title=?,confidence=?,provider=? WHERE message_id=? AND period_key=?", (int(bool(entry.get("include"))),entry.get("category"),category.get("title"),category.get("emoji"),entry.get("title"),entry.get("confidence"),provider,entry.get("id"),period))
+      con.execute("UPDATE classification_runs SET status='complete',lock_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE period_key=? AND run_id=?",(period,run_id))
     return "+".join(sorted(set(provider_used)))
