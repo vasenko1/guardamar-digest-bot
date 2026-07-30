@@ -14,6 +14,10 @@ from .llm import _json, _post
 
 VERSION = "2026-07-30.1"
 _blocked_providers: set[str] = set()
+
+
+class ProviderTemporarilyBlocked(ValueError):
+    pass
 URL_OR_CONTACT = re.compile(r"https?://\S+|(?:@\w+)|\+?\d[\d ()-]{7,}")
 WORDS = re.compile(r"[\wа-яёáéíóúüñ]{3,}", re.I)
 STOP_WORDS = {
@@ -191,7 +195,7 @@ def _review_prompt(pairs: list[tuple[object, object]]) -> str:
 
 def _ask_provider(settings, content: str, provider: str, max_tokens: int) -> dict:
     if provider in _blocked_providers:
-        raise RuntimeError(f"{provider} temporarily rate-limited")
+        raise ProviderTemporarilyBlocked(f"{provider} temporarily rate-limited")
     if provider == "gemini" and settings.gemini_key:
         raw = _post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_key}",
