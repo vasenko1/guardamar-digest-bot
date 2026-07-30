@@ -353,8 +353,8 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
     provider_used = ""
     # Eight pairs fit comfortably in the free-model response budget and make a
     # truncated answer harmless: nothing is written until every batch validates.
-    for offset in range(0, len(pairs), 8):
-        batch = pairs[offset:offset + 8]
+    for offset in range(0, len(pairs), 1):
+        batch = pairs[offset:offset + 1]
         expected = {(left["id"], right["id"]) for left, right in batch}
         errors: list[str] = []
         for provider in ("gemini", "openrouter"):
@@ -366,6 +366,11 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
                     raise ValueError(f"incomplete semantic response: expected {len(expected)} pairs, got {len(keys)}")
                 for item in returned:
                     item["confidence"] = normalize_confidence(item.get("confidence"))
+                    status = "same" if item.get("same_offer") and item["confidence"] == "high" else ("different" if item["confidence"] == "high" else "uncertain")
+                    with connect(settings.db_path) as con:
+                        con.execute("UPDATE duplicate_reviews SET status=?, confidence=?, provider=? WHERE period_key=? AND left_message_id=? AND right_message_id=?", (status,item["confidence"],provider,period,item["left"],item["right"]))
+                        _rebuild_semantic_duplicates(con, period)
+                        _refresh_review_flags(con, period)
                 decisions.extend(returned)
                 provider_used = provider if not provider_used else provider_used
                 break
@@ -401,7 +406,7 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
     with connect(settings.db_path) as con:
         for (left, right), decision in decisions_by_pair.items():
             status = "same" if decision.get("same_offer") and decision["confidence"] == "high" else (
-                "different" if decision["confidence"] == "high" else "pending"
+                "different" if decision["confidence"] == "high" else "uncertain"
             )
             con.execute(
                 """UPDATE duplicate_reviews SET status=?, confidence=?, provider=?
@@ -444,7 +449,7 @@ def review_report(db_path, period: str) -> str:
                FROM duplicate_reviews d JOIN messages l ON l.id=d.left_message_id
                JOIN messages r ON r.id=d.right_message_id
                JOIN entries le ON le.message_id=l.id JOIN entries re ON re.message_id=r.id
-               WHERE d.period_key=? AND d.status='pending'
+               WHERE d.period_key=? AND d.status IN ('pending','uncertain')
                  AND le.excluded_reason IS NULL AND re.excluded_reason IS NULL
                ORDER BY l.message_id, r.message_id""",
             (period,),
@@ -467,7 +472,7 @@ def _refresh_review_flags(con, period: str) -> None:
     con.execute(
         """UPDATE entries SET needs_duplicate_review=CASE WHEN EXISTS (
               SELECT 1 FROM duplicate_reviews d
-              WHERE d.period_key=entries.period_key AND d.status='pending'
+              WHERE d.period_key=entries.period_key AND d.status IN ('pending','uncertain')
                 AND (d.left_message_id=entries.message_id OR d.right_message_id=entries.message_id)
             ) THEN 1 ELSE 0 END
             WHERE period_key=? AND excluded_reason IS NULL""",
