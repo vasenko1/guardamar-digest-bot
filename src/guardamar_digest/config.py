@@ -43,7 +43,7 @@ def settings() -> Settings:
         bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         admin_chat_id=os.getenv("TELEGRAM_ADMIN_CHAT_ID", ""),
         gemini_key=os.getenv("GEMINI_API_KEY", ""),
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
         openrouter_key=os.getenv("OPENROUTER_API_KEY", ""),
         openrouter_model=os.getenv("OPENROUTER_MODEL", "openrouter/free"),
     )

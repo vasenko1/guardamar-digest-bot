@@ -49,10 +49,10 @@ def classify(settings: Settings, period: str) -> str:
     for provider in ("gemini", "openrouter"):
         try:
             if provider == "gemini" and settings.gemini_key:
-                raw = _post(f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_key}", {"Content-Type":"application/json"}, {"contents":[{"parts":[{"text":content}]}], "generationConfig":{"responseMimeType":"application/json"}})
+                raw = _post(f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_key}", {"Content-Type":"application/json"}, {"contents":[{"parts":[{"text":content}]}], "generationConfig":{"responseMimeType":"application/json", "maxOutputTokens":32768}})
                 result = _json(raw["candidates"][0]["content"]["parts"][0]["text"])
             elif provider == "openrouter" and settings.openrouter_key:
-                raw = _post("https://openrouter.ai/api/v1/chat/completions", {"Content-Type":"application/json", "Authorization":f"Bearer {settings.openrouter_key}"}, {"model":settings.openrouter_model,"messages":[{"role":"user","content":content}],"response_format":{"type":"json_object"}})
+                raw = _post("https://openrouter.ai/api/v1/chat/completions", {"Content-Type":"application/json", "Authorization":f"Bearer {settings.openrouter_key}"}, {"model":settings.openrouter_model,"messages":[{"role":"user","content":content}],"response_format":{"type":"json_object"},"max_tokens":32768})
                 result = _json(raw["choices"][0]["message"]["content"])
             else:
                 continue
