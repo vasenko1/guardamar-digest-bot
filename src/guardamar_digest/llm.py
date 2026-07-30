@@ -75,6 +75,8 @@ def classify(settings: Settings, period: str) -> str:
                         (int(bool(entry.get("include"))), entry.get("category"), category.get("title"), category.get("emoji"), entry.get("title"), entry.get("confidence"), provider, entry.get("id"), period),
                     )
             return provider
-        except (HTTPError, IncompleteRead, JSONDecodeError, KeyError, ValueError, URLError, TimeoutError, OSError) as exc:
+        except HTTPError as exc:
+            errors.append(f"{provider}: HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:800]}")
+        except (IncompleteRead, JSONDecodeError, KeyError, ValueError, URLError, TimeoutError, OSError) as exc:
             errors.append(f"{provider}: {exc}")
     raise RuntimeError("; ".join(errors) or "No LLM API key configured")
