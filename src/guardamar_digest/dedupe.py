@@ -58,7 +58,9 @@ def dedupe(db_path, period: str) -> dict[str, int]:
                WHERE period_key=? AND dedupe_version IS NOT NULL""",
             (period,),
         )
-        con.execute("DELETE FROM duplicate_reviews WHERE period_key=?", (period,))
+        # Model conclusions are reproducible and may be refreshed; explicit
+        # editor decisions are durable editorial data and must survive re-runs.
+        con.execute("DELETE FROM duplicate_reviews WHERE period_key=? AND provider IS NOT 'manual'", (period,))
         con.execute("DELETE FROM dedupe_topics WHERE period_key=?", (period,))
         con.execute(
             """UPDATE entries SET eligible=1, category_code=NULL, category_title=NULL,
@@ -109,7 +111,7 @@ def dedupe(db_path, period: str) -> dict[str, int]:
                     # marked for semantic review because numbers/cities may matter.
                     if score >= 0.58:
                         con.execute(
-                            """INSERT INTO duplicate_reviews
+                            """INSERT OR IGNORE INTO duplicate_reviews
                                (period_key,left_message_id,right_message_id,lexical_score)
                                VALUES (?,?,?,?)""",
                             (period, left["id"], right["id"], round(score, 3)),
@@ -126,6 +128,8 @@ def dedupe(db_path, period: str) -> dict[str, int]:
             "SELECT COUNT(*) AS count FROM entries WHERE period_key=? AND needs_duplicate_review=1",
             (period,),
         ).fetchone()["count"]
+        _rebuild_semantic_duplicates(con, period)
+        _refresh_review_flags(con, period)
     return {"messages": len(rows), "auto_duplicates": auto_duplicates,
             "review_pairs": review_pairs, "review_entries": review_entries}
 
