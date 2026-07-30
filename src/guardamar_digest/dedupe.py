@@ -336,11 +336,19 @@ class _UnionFind:
 def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
     """Use tiny, all-or-nothing LLM batches to resolve semantic duplicate pairs."""
     _blocked_providers.clear()
-    topic_items, thematic_pairs = discover_topics(settings, period)
+    topic_error = ""
+    try:
+        topic_items, thematic_pairs = discover_topics(settings, period)
+    except RuntimeError as exc:
+        # A weak free fallback may fail the strict topic JSON contract. Existing
+        # lexical candidates are still safe and useful; do not discard a whole
+        # month merely because this optional discovery layer is unavailable.
+        topic_items, thematic_pairs = 0, 0
+        topic_error = str(exc)
     pairs = _review_pairs(settings.db_path, period)
     if not pairs:
         return {"topic_items": topic_items, "thematic_pairs": thematic_pairs, "candidate_pairs": 0,
-                "semantic_duplicates": 0, "unresolved_pairs": 0, "provider": "none"}
+                "semantic_duplicates": 0, "unresolved_pairs": 0, "provider": "none", "topic_warning": topic_error}
     decisions: list[dict] = []
     provider_used = ""
     # Eight pairs fit comfortably in the free-model response budget and make a
@@ -417,7 +425,7 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
                 )
                 semantic_duplicates += 1
     return {"topic_items": topic_items, "thematic_pairs": thematic_pairs, "candidate_pairs": len(pairs), "semantic_duplicates": semantic_duplicates,
-            "unresolved_pairs": unresolved_pairs, "provider": provider_used}
+            "unresolved_pairs": unresolved_pairs, "provider": provider_used, "topic_warning": topic_error}
 
 
 def review_report(db_path, period: str) -> str:
