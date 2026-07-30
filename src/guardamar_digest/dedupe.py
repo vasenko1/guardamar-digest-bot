@@ -18,7 +18,7 @@ _blocked_providers: set[str] = set()
 
 class ProviderTemporarilyBlocked(ValueError):
     pass
-URL_OR_CONTACT = re.compile(r"https?://\S+|(?:@\w+)|\+?\d[\d ()-]{7,}")
+URL_OR_CONTACT = re.compile(r"https?://\S+|(?:@\w+)|\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b|\+?\d[\d ()-]{7,}")
 WORDS = re.compile(r"[\wа-яёáéíóúüñ]{3,}", re.I)
 STOP_WORDS = {
     "это", "как", "для", "или", "что", "при", "без", "все", "the", "and",
@@ -82,9 +82,6 @@ def dedupe(db_path, period: str) -> dict[str, int]:
                WHERE period_key=? AND dedupe_version IS NOT NULL""",
             (period,),
         )
-        # Model conclusions are reproducible and may be refreshed; explicit
-        # editor decisions are durable editorial data and must survive re-runs.
-        con.execute("DELETE FROM duplicate_reviews WHERE period_key=? AND provider IS NOT 'manual'", (period,))
         con.execute(
             """UPDATE entries SET eligible=1, category_code=NULL, category_title=NULL,
                category_emoji=NULL, short_title=NULL, confidence=NULL, provider=NULL
@@ -97,6 +94,10 @@ def dedupe(db_path, period: str) -> dict[str, int]:
                WHERE e.period_key=? ORDER BY m.sender_id, m.published_at, m.message_id""",
             (period,),
         ).fetchall()
+        current = {row["id"]: fingerprint(row["source_text"]) for row in rows}
+        for review in con.execute("SELECT left_message_id,right_message_id,left_fingerprint,right_fingerprint FROM duplicate_reviews WHERE period_key=? AND provider IS NOT 'manual'", (period,)):
+            if current.get(review["left_message_id"]) != review["left_fingerprint"] or current.get(review["right_message_id"]) != review["right_fingerprint"]:
+                con.execute("DELETE FROM duplicate_reviews WHERE period_key=? AND left_message_id=? AND right_message_id=?", (period, review["left_message_id"], review["right_message_id"]))
         by_author: dict[str, list] = defaultdict(list)
         for row in rows:
             # Missing immutable author id is unsafe for automatic matching.
@@ -134,9 +135,9 @@ def dedupe(db_path, period: str) -> dict[str, int]:
                     if score >= 0.58:
                         con.execute(
                             """INSERT OR IGNORE INTO duplicate_reviews
-                               (period_key,left_message_id,right_message_id,lexical_score)
-                               VALUES (?,?,?,?)""",
-                            (period, left["id"], right["id"], round(score, 3)),
+                               (period_key,left_message_id,right_message_id,lexical_score,left_fingerprint,right_fingerprint)
+                               VALUES (?,?,?,?,?,?)""",
+                            (period, left["id"], right["id"], round(score, 3), fingerprint(left["source_text"]), fingerprint(right["source_text"])),
                         )
                         con.execute(
                             """UPDATE entries SET needs_duplicate_review=1,
@@ -306,10 +307,11 @@ def discover_topics(settings, period: str) -> tuple[int, int]:
             group_rows.sort(key=lambda row: (row["published_at"], row["message_id"]))
             # Adjacent links form a transitive campaign and avoid quadratic cost.
             for left, right in zip(group_rows, group_rows[1:]):
+                first, second = sorted((left, right), key=lambda row: row["id"])
                 result = con.execute(
                     """INSERT OR IGNORE INTO duplicate_reviews
-                       (period_key,left_message_id,right_message_id,lexical_score) VALUES (?,?,?,0)""",
-                    (period, min(left["id"], right["id"]), max(left["id"], right["id"])),
+                       (period_key,left_message_id,right_message_id,lexical_score,left_fingerprint,right_fingerprint) VALUES (?,?,?,?,?,?)""",
+                    (period, first["id"], second["id"], 0, fingerprint(first["source_text"]), fingerprint(second["source_text"])),
                 )
                 created += result.rowcount
     return len(annotations), created

@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS entries (
   short_title TEXT,
   confidence TEXT,
   provider TEXT,
+  left_fingerprint TEXT,
+  right_fingerprint TEXT,
   manual_title TEXT,
   manual_category TEXT,
   excluded_reason TEXT,
@@ -90,6 +92,8 @@ def migrate(con: sqlite3.Connection) -> None:
     _add_column_if_missing(con, "entries", "dedupe_version TEXT")
     _add_column_if_missing(con, "entries", "needs_duplicate_review INTEGER NOT NULL DEFAULT 0")
     _add_column_if_missing(con, "dedupe_topics", "text_fingerprint TEXT")
+    _add_column_if_missing(con, "duplicate_reviews", "left_fingerprint TEXT")
+    _add_column_if_missing(con, "duplicate_reviews", "right_fingerprint TEXT")
     con.execute("CREATE INDEX IF NOT EXISTS entries_period ON entries(period_key)")
     con.execute("CREATE INDEX IF NOT EXISTS messages_sender_period ON messages(sender_id, published_at)")
     con.execute("CREATE INDEX IF NOT EXISTS entries_duplicate_review ON entries(period_key, needs_duplicate_review)")
