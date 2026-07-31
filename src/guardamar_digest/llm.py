@@ -93,8 +93,13 @@ def _sanitize_showcase_title(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("model response has empty title")
     title = SANITIZE_CONTACT.sub(" ", value)
+    # Keep cleanup and validation aligned. The broad validation expression is
+    # intentionally applied second so any contact it can reject is also
+    # removable; the result is validated again below.
+    title = TITLE_CONTACT.sub(" ", title)
     title = TITLE_PRICE.sub(" ", title)
     title = re.sub(r"\s*[·•|]+\s*", " ", title)
+    title = re.sub(r"(?:\s*[-\N{EN DASH}\N{EM DASH},:;/]+\s*)*[)\]]+\s*$", "", title)
     title = re.sub(r"\s+", " ", title).strip(" ,;:|/\N{EN DASH}\N{EM DASH}-")
     return _validate_showcase_title(title)
 

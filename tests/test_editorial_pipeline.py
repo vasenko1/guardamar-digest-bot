@@ -482,6 +482,10 @@ class PipelineTest(unittest.TestCase):
             ),
             "Массаж в Аликанте",
         )
+        self.assertEqual(
+            _sanitize_showcase_title("Трансфер — 633 114 577)"),
+            "Трансфер",
+        )
 
     def test_single_object_json_array_is_unwrapped(self):
         self.assertEqual(_json('[{"entries": []}]'), {"entries": []})
