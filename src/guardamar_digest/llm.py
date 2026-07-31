@@ -32,6 +32,10 @@ TITLE_PRICE = re.compile(
     r"(?:\d[\d\s.,]*\s*(?:€|eur\b|евро\b|₽|\$|грн\b)|(?:€|\$)\s*\d)",
     re.I,
 )
+SANITIZE_CONTACT = re.compile(
+    r"https?://\S+|www\.\S+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|@\w+|"
+    r"(?<!\d)\+?\d[\d ()-]{7,}\d(?!\d)", re.I,
+)
 
 
 def prepare_rows(records) -> list[dict]:
@@ -84,6 +88,17 @@ def _validate_showcase_title(value: object) -> str:
     return title
 
 
+def _sanitize_showcase_title(value: object) -> str:
+    """Remove forbidden data that can be deleted without changing the offer."""
+    if not isinstance(value, str):
+        raise ValueError("model response has empty title")
+    title = SANITIZE_CONTACT.sub(" ", value)
+    title = TITLE_PRICE.sub(" ", title)
+    title = re.sub(r"\s*[·•|]+\s*", " ", title)
+    title = re.sub(r"\s+", " ", title).strip(" ,;:|/\N{EN DASH}\N{EM DASH}-")
+    return _validate_showcase_title(title)
+
+
 def _post(url: str, headers: dict[str, str], body: dict) -> dict:
     """Paced REST call with bounded retries for free-provider transient errors."""
     global _last_request_at
@@ -119,6 +134,10 @@ def _json(text: object) -> dict:
     fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
     candidate = fenced.group(1) if fenced else text.strip()
     value, _ = json.JSONDecoder().raw_decode(candidate)
+    # Free models occasionally wrap the requested object in a one-element
+    # array despite JSON mode. This shape is unambiguous and safe to unwrap.
+    if isinstance(value, list) and len(value) == 1 and isinstance(value[0], dict):
+        value = value[0]
     if not isinstance(value, dict):
         raise ValueError("model response is not a JSON object")
     return value
@@ -296,7 +315,7 @@ def classify(settings: Settings, period: str) -> str:
             if any(entry.get("category") not in fixed_map for entry in returned): raise ValueError("model used a category outside the fixed plan")
             with connect(settings.db_path) as con:
               entry=returned[0]
-              title = _validate_showcase_title(entry.get("title"))
+              title = _sanitize_showcase_title(entry.get("title"))
               if not isinstance(entry.get("include"),bool): raise ValueError("model response has non-boolean include")
               category=fixed_map[entry["category"]]
               con.execute("UPDATE entries SET eligible=?,category_code=?,category_title=?,category_emoji=?,short_title=?,confidence=?,provider=?,classification_run_id=? WHERE message_id=? AND period_key=?",(int(entry["include"]),entry["category"],category.get("title"),category.get("emoji"),title,entry.get("confidence"),provider,run_id,entry["id"],period))

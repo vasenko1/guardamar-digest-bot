@@ -13,6 +13,8 @@ from guardamar_digest.dedupe import _date_features, _route_features
 from guardamar_digest.dedupe import dedupe, semantic_dedupe
 from guardamar_digest.importer import import_export
 from guardamar_digest.llm import (
+    _json,
+    _sanitize_showcase_title,
     _validate_showcase_title,
     classify,
     classification_signature,
@@ -472,6 +474,17 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(_validate_showcase_title("BMW 520 TD"), "BMW 520 TD")
         with self.assertRaisesRegex(ValueError, "not normalized to Russian"):
             _validate_showcase_title("Заняття для дітей")
+
+    def test_model_title_is_safely_cleaned_before_checkpoint(self):
+        self.assertEqual(
+            _sanitize_showcase_title(
+                "Массаж в Аликанте — 30 € · +34 633 114 577 · @master"
+            ),
+            "Массаж в Аликанте",
+        )
+
+    def test_single_object_json_array_is_unwrapped(self):
+        self.assertEqual(_json('[{"entries": []}]'), {"entries": []})
 
     def test_classification_rejects_string_false_from_model(self):
         base = make_settings(self.db)
