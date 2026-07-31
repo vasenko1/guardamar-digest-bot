@@ -165,10 +165,10 @@ class PipelineTest(unittest.TestCase):
             add_message(con, 11, "Аренда авто в Аликанте напрямую от владельца")
         dedupe(self.db, "2026-07")
         with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)), \
-             patch("guardamar_digest.dedupe._ask_provider",
-                   side_effect=ValueError("provider unavailable")):
+             patch("guardamar_digest.dedupe._ask_provider") as ask:
             result = semantic_dedupe(settings, "2026-07")
         self.assertEqual(result["unresolved_pairs"], 0)
+        ask.assert_not_called()
         self.assertEqual(result["fallback_pairs"], 1)
         with connect(self.db) as con:
             statuses = {

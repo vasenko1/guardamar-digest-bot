@@ -12,7 +12,7 @@ from .db import connect
 from .llm import _json, _post
 
 
-VERSION = "2026-07-31.1"
+VERSION = "2026-08-01.1"
 _blocked_providers: set[str] = set()
 
 
@@ -536,6 +536,11 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
     pairs = _review_pairs(settings.db_path, period)
     if not pairs:
         with connect(settings.db_path) as con:
+            semantic_duplicates = con.execute(
+                """SELECT COUNT(*) FROM entries WHERE period_key=?
+                   AND dedupe_reason LIKE 'semantic same author%'""",
+                (period,),
+            ).fetchone()[0]
             con.execute(
                 """INSERT OR REPLACE INTO workflow_runs
                    (period_key,stage,rule_version,status,details,completed_at)
@@ -543,7 +548,7 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
                 (period, VERSION, json.dumps({"candidate_pairs": 0}, ensure_ascii=False)),
             )
         return {"topic_items": topic_items, "thematic_pairs": thematic_pairs, "candidate_pairs": 0,
-                "same_pairs": 0, "semantic_duplicates": 0, "fallback_pairs": 0,
+                "same_pairs": 0, "semantic_duplicates": semantic_duplicates, "fallback_pairs": 0,
                 "unresolved_pairs": 0, "provider": "none", "topic_warning": topic_error}
     provider_names: set[str] = set()
     fallback_count = 0
@@ -552,7 +557,17 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
         expected = {(left["id"], right["id"])}
         errors: list[str] = []
         final_status = final_confidence = final_provider = final_reason = ""
-        for provider in ("gemini", "openrouter"):
+        rule_status, rule_reason, rule_confidence = _deterministic_arbitration(left, right)
+        hard_rule = rule_reason in {
+            "intent_conflict", "explicit_date_conflict", "explicit_route_conflict",
+            "same_author_commercial_topic",
+        }
+        if hard_rule:
+            final_status, final_reason = rule_status, rule_reason
+            final_confidence, final_provider = rule_confidence, "rule"
+            provider_names.add("rule")
+            fallback_count += 1
+        for provider in (() if hard_rule else ("gemini", "openrouter")):
             try:
                 result = _ask_provider(settings, _review_prompt([(left, right)]), provider, 768)
                 returned = result.get("decisions", [])
@@ -578,7 +593,9 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
                     TypeError, ValueError, json.JSONDecodeError) as exc:
                 errors.append(f"{provider}: {exc}")
         if not final_status:
-            final_status, final_reason, final_confidence = _deterministic_arbitration(left, right)
+            final_status, final_reason, final_confidence = (
+                rule_status, rule_reason, rule_confidence
+            )
             final_provider = "rule"
             provider_names.add("rule")
             fallback_count += 1
