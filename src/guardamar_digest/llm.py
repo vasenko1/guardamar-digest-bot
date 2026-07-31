@@ -225,11 +225,12 @@ def classify(settings: Settings, period: str) -> str:
                 f"Duplicate arbitration is incomplete: {unresolved} unresolved pairs"
             )
         records = con.execute(
-            "SELECT m.id, m.source_text FROM messages m JOIN entries e ON e.message_id=m.id "
+            "SELECT m.id, m.message_id, m.source_text FROM messages m JOIN entries e ON e.message_id=m.id "
             "WHERE e.period_key=? AND e.manual_title IS NULL AND e.excluded_reason IS NULL "
             "AND e.needs_duplicate_review=0 ORDER BY m.message_id",
             (period,),
         ).fetchall()
+    external_ids = {record["id"]: record["message_id"] for record in records}
     rows = prepare_rows(records)
     if not rows:
         return "nothing to classify"
@@ -331,7 +332,12 @@ def classify(settings: Settings, period: str) -> str:
             errors.append(f"{provider}: HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:800]}")
         except (IncompleteRead, JSONDecodeError, KeyError, ValueError, URLError, TimeoutError, OSError) as exc:
             errors.append(f"{provider}: {exc}")
-      else: raise RuntimeError("; ".join(errors) or "No LLM API key configured")
+      else:
+        external_id = external_ids.get(batch[0]["id"], batch[0]["id"])
+        raise RuntimeError(
+          f"Telegram message {external_id}: "
+          + ("; ".join(errors) or "No LLM API key configured")
+        )
     with connect(settings.db_path) as con:
       remaining = con.execute(
         """SELECT COUNT(*) FROM entries e JOIN messages m ON m.id=e.message_id
