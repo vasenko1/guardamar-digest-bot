@@ -589,6 +589,10 @@ class PipelineTest(unittest.TestCase):
                 '{"entries":[{"id":1,"include":"false","category":"education",'
                 '"title":"Занятия по шахматам","confidence":"high"}]}'
             }]}}]},
+            {"candidates": [{"content": {"parts": [{"text":
+                '{"entries":[{"id":1,"include":"false","category":"education",'
+                '"title":"Занятия по шахматам","confidence":"high"}]}'
+            }]}}]},
         ]
         with patch("guardamar_digest.llm._post", side_effect=responses):
             with self.assertRaisesRegex(RuntimeError, "non-boolean include"):
@@ -598,6 +602,42 @@ class PipelineTest(unittest.TestCase):
                 "SELECT status FROM classification_runs WHERE period_key='2026-07'"
             ).fetchone()["status"]
         self.assertEqual(status, "running")
+
+    def test_classification_retries_invalid_model_content_for_one_entry(self):
+        base = make_settings(self.db)
+        settings = Settings(
+            base.root, base.db_path, base.source_username, base.source_chat_id,
+            "", "", "gemini-key", "test-model", "", "test",
+            base.excluded_sender_ids,
+        )
+        with connect(self.db) as con:
+            add_message(con, 39, "Предлагаю услуги маникюра")
+        prefilter(settings, "2026-07")
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)):
+            semantic_dedupe(settings, "2026-07")
+        category = (
+            '{"categories":[{"code":"beauty","title":"Красота",'
+            '"emoji":"💅"}]}'
+        )
+        responses = [
+            {"candidates": [{"content": {"parts": [{"text": category}]}}]},
+            {"candidates": [{"content": {"parts": [{"text":
+                '{"entries":[]}'
+            }]}}]},
+            {"candidates": [{"content": {"parts": [{"text":
+                '{"entries":[{"id":1,"include":true,"category":"beauty",'
+                '"title":"Маникюр","confidence":"high"}]}'
+            }]}}]},
+        ]
+        with patch("guardamar_digest.llm._post", side_effect=responses) as post:
+            self.assertEqual(classify(settings, "2026-07"), "gemini")
+        self.assertEqual(post.call_count, 3)
+        with connect(self.db) as con:
+            row = con.execute(
+                "SELECT short_title,provider FROM entries WHERE period_key='2026-07'"
+            ).fetchone()
+        self.assertEqual(dict(row), {"short_title": "Маникюр", "provider": "gemini"})
 
     def test_changed_month_input_reuses_unchanged_classification_checkpoints(self):
         base = make_settings(self.db)

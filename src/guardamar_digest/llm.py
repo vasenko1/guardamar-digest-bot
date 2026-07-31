@@ -20,6 +20,10 @@ _last_request_at = 0.0
 # room for the category-plan call and retry jitter.
 MIN_REQUEST_INTERVAL = 5.0
 MAX_RETRIES = 2
+# Transport retries in _post do not help when a free model returns HTTP 200
+# with truncated or otherwise invalid JSON. Retry the semantic request too,
+# but keep the bound small so one entry cannot consume the daily quota.
+MODEL_RESPONSE_ATTEMPTS = 2
 CLASSIFIER_VERSION = "2026-07-31.2"
 CATEGORY_CODE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 RUSSIAN_TEXT = re.compile(r"[а-яё]", re.I)
@@ -371,7 +375,8 @@ def classify(settings: Settings, period: str) -> str:
       batch = rows[offset:offset + 1]
       if batch[0]["id"] in done: continue
       errors = []
-      for provider in ("gemini", "openrouter"):
+      providers = ("gemini", "openrouter") * MODEL_RESPONSE_ATTEMPTS
+      for provider in providers:
         try:
             content = prompt(batch, fixed_categories)
             if provider == "gemini" and settings.gemini_key:
