@@ -20,13 +20,17 @@ _last_request_at = 0.0
 # room for the category-plan call and retry jitter.
 MIN_REQUEST_INTERVAL = 5.0
 MAX_RETRIES = 2
-CLASSIFIER_VERSION = "2026-07-30.4"
+CLASSIFIER_VERSION = "2026-07-31.1"
 CATEGORY_CODE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 RUSSIAN_TEXT = re.compile(r"[а-яё]", re.I)
 UKRAINIAN_ONLY = re.compile(r"[іїєґ]", re.I)
+PHONE_NUMBER = re.compile(
+    r"(?:\+\d(?:[\s()-]*\d){7,14}|"
+    r"(?<![\w.])(?:\d[\s()-]*){8,14}\d(?![\w.]))"
+)
 TITLE_CONTACT = re.compile(
     r"https?://|www\.|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|@\w+|"
-    r"\+?\d[\d ()-]{7,}", re.I,
+    + PHONE_NUMBER.pattern, re.I,
 )
 TITLE_PRICE = re.compile(
     r"(?:\d[\d\s.,]*\s*(?:€|eur\b|евро\b|₽|\$|грн\b)|(?:€|\$)\s*\d)",
@@ -34,7 +38,7 @@ TITLE_PRICE = re.compile(
 )
 SANITIZE_CONTACT = re.compile(
     r"https?://\S+|www\.\S+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|@\w+|"
-    r"(?<!\d)\+?\d[\d ()-]{7,}\d(?!\d)", re.I,
+    + PHONE_NUMBER.pattern, re.I,
 )
 
 
@@ -42,9 +46,7 @@ def prepare_rows(records) -> list[dict]:
     return [
         {
             "id": record["id"],
-            "text": re.sub(
-                r"https?://\S+|\+?\d[\d ()-]{7,}", "", record["source_text"]
-            )[:420],
+            "text": SANITIZE_CONTACT.sub("", record["source_text"])[:420],
         }
         for record in records
     ]

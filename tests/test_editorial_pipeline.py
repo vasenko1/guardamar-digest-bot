@@ -486,6 +486,10 @@ class PipelineTest(unittest.TestCase):
             _sanitize_showcase_title("Трансфер — 633 114 577)"),
             "Трансфер",
         )
+        self.assertEqual(
+            _sanitize_showcase_title("Hyundai i20 2014 1.2 127 тыс.км"),
+            "Hyundai i20 2014 1.2 127 тыс.км",
+        )
 
     def test_single_object_json_array_is_unwrapped(self):
         self.assertEqual(_json('[{"entries": []}]'), {"entries": []})

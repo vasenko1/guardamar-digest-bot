@@ -9,10 +9,10 @@ from .db import connect
 from .dedupe import VERSION as DEDUPE_VERSION
 from .prefilter import VERSION as PREFILTER_VERSION, _period_cutoff
 from .render import telegram_length
-from .llm import classification_signature, prepare_rows
+from .llm import PHONE_NUMBER, classification_signature, prepare_rows
 
 
-PHONE = re.compile(r"\+?\d[\d ()-]{7,}")
+PHONE = PHONE_NUMBER
 CONTACT = re.compile(r"https?://|www\.|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|@\w+", re.I)
 PRICE = re.compile(r"(?:\d[\d\s.,]*\s*(?:€|eur\b|евро\b|₽|\$|грн\b)|(?:€|\$)\s*\d)", re.I)
 GENERIC = re.compile(
