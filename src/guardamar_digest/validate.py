@@ -163,15 +163,12 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
             configured_author_misses = con.execute(
                 f"""SELECT COUNT(*) FROM messages m JOIN entries e ON e.message_id=m.id
                     WHERE e.period_key=? AND m.sender_id IN ({marks})
-                      AND NOT (
-                        e.excluded_reason='author'
-                        AND e.dedupe_reason='prefilter:author'
-                      )""",
+                      AND e.excluded_reason IS NULL""",
                 (period, *settings.excluded_sender_ids),
             ).fetchone()[0]
         if configured_author_misses:
             errors.append(
-                f"{configured_author_misses} configured excluded-author messages were not prefiltered"
+                f"{configured_author_misses} configured excluded-author messages remain publishable"
             )
         missing = con.execute(
             """SELECT COUNT(*) FROM entries

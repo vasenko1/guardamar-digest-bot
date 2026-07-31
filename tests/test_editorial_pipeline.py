@@ -470,6 +470,18 @@ class PipelineTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertTrue(any("prefilter" in error for error in result.errors))
 
+    def test_validator_accepts_other_safe_exclusion_for_blocked_author(self):
+        settings = make_settings(self.db, {"system"})
+        with connect(self.db) as con:
+            message_id = add_message(con, 38, "Погода и события", "system")
+            con.execute(
+                """UPDATE entries SET eligible=0,excluded_reason='missing from latest export',
+                   dedupe_reason='import reconciliation' WHERE message_id=?""",
+                (message_id,),
+            )
+        result = validate_period(settings, "2026-07")
+        self.assertFalse(any("excluded-author" in error for error in result.errors))
+
     def test_showcase_title_allows_brand_but_rejects_ukrainian_prose(self):
         self.assertEqual(_validate_showcase_title("BMW 520 TD"), "BMW 520 TD")
         with self.assertRaisesRegex(ValueError, "not normalized to Russian"):
