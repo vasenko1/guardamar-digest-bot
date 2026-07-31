@@ -20,10 +20,13 @@ _last_request_at = 0.0
 # room for the category-plan call and retry jitter.
 MIN_REQUEST_INTERVAL = 5.0
 MAX_RETRIES = 2
-CLASSIFIER_VERSION = "2026-07-31.1"
+CLASSIFIER_VERSION = "2026-07-31.2"
 CATEGORY_CODE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 RUSSIAN_TEXT = re.compile(r"[а-яё]", re.I)
 UKRAINIAN_ONLY = re.compile(r"[іїєґ]", re.I)
+INCOHERENT_CATEGORY = re.compile(
+    r"(?:товар\w*\s+и\s+услуг\w*|работ\w*\s+и\s+обучен\w*)", re.I,
+)
 PHONE_NUMBER = re.compile(
     r"(?:\+\d(?:[\s()-]*\d){7,14}|"
     r"(?<![\w.])(?:\d[\s()-]*){8,14}\d(?![\w.]))"
@@ -35,6 +38,10 @@ TITLE_CONTACT = re.compile(
 TITLE_PRICE = re.compile(
     r"(?:\d[\d\s.,]*\s*(?:€|eur\b|евро\b|₽|\$|грн\b)|(?:€|\$)\s*\d)",
     re.I,
+)
+TITLE_GENERIC = re.compile(
+    r"^(?:объявление|продажа товара(?:\s+за)?|прода[её]тся|"
+    r"возможно торг|рекомендация услуг)\W*$", re.I,
 )
 SANITIZE_CONTACT = re.compile(
     r"https?://\S+|www\.\S+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|@\w+|"
@@ -68,6 +75,7 @@ def _valid_category(category: object) -> bool:
         and isinstance(category.get("title"), str)
         and RUSSIAN_TEXT.search(category["title"]) is not None
         and UKRAINIAN_ONLY.search(category["title"]) is None
+        and INCOHERENT_CATEGORY.search(category["title"]) is None
         and isinstance(category.get("emoji", ""), str)
     )
 
@@ -76,8 +84,8 @@ def _validate_showcase_title(value: object) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("model response has empty title")
     title = " ".join(value.split())
-    if len(title) > 120:
-        raise ValueError("model response title is longer than 120 characters")
+    if len(title) > 100:
+        raise ValueError("model response title is longer than 100 characters")
     # A model/brand-only title such as "BMW 520 TD" is language-neutral and
     # valid. Ukrainian-specific letters, however, prove that prose was not
     # normalized to Russian as required.
@@ -87,6 +95,10 @@ def _validate_showcase_title(value: object) -> str:
         raise ValueError("model response title contains a contact or URL")
     if TITLE_PRICE.search(title):
         raise ValueError("model response title contains a price")
+    if TITLE_GENERIC.fullmatch(title):
+        raise ValueError("model response title is non-informative")
+    if title.count("(") != title.count(")") or title.count("[") != title.count("]"):
+        raise ValueError("model response title has unbalanced punctuation")
     return title
 
 
@@ -155,7 +167,7 @@ def prompt(rows: list[dict], categories: list[dict] | None = None) -> str:
         return """Верни ТОЛЬКО JSON: {\"entries\":[{\"id\":1,\"include\":true,\"category\":\"разрешённый_code\",\"title\":\"...\",\"confidence\":\"high|low\"}]}.
 Для КАЖДОГО переданного id верни ровно один объект. Используй только разрешённые категории. Не пиши цену, контакты, URL; другой город укажи. Если это не самостоятельное объявление, include=false, но title всё равно заполни кратко.
 Витринная строка ВСЕГДА на русском, даже если исходник на украинском, испанском или английском. Имена, бренды, города и даты сохраняй.
-Title — одна информативная строка, обычно 35–70 и максимум 120 символов.
+Title — одна информативная строка, обычно 40–75 и максимум 100 символов.
 Не повторяй в title название категории, не используй капслок и рекламные эпитеты.
 Включай только конкретное предложение или запрос товара, услуги, жилья, работы, транспорта, обучения либо мероприятия. Погода, новости, отзывы, обсуждения и общие вопросы без конкретного запроса — include=false.
 Разрешённые категории: """ + json.dumps(categories, ensure_ascii=False) + "\nДанные:\n" + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
@@ -175,7 +187,10 @@ def plan_prompt(rows: list[dict]) -> str:
 {\"categories\":[{\"code\":\"ascii_code\",\"title\":\"Русское название\",\"emoji\":\"...\"}]}.
 Создай широкие категории только для объявлений текущего месяца.
 Название каждой категории обязательно пиши по-русски независимо от языка
-исходных объявлений. Не создавай микрокатегории. Данные:\n""" + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+исходных объявлений. Категория должна объединять одну понятную потребность
+читателя. Не смешивай товары с услугами, работу с обучением, транспорт с
+недвижимостью. Не создавай микрокатегории; обычно достаточно 5–9 разделов.
+Данные:\n""" + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
 
 
 def classify(settings: Settings, period: str) -> str:

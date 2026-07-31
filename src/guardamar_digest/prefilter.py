@@ -2,21 +2,31 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .db import connect
 
 
-VERSION = "2026-07-30.4"
+VERSION = "2026-07-31.1"
 GENERIC_ONLY = re.compile(
     r"^(?:прода[её]тся|продам|торг|возможен торг|возможно торг|"
     r"актуально|срочно|подробности в личк[еу]|пишите в личк[еу])[\s.!?,…-]*$",
     re.I,
 )
 SUBJECT_WORD = re.compile(r"[\wа-яёіїєґáéíóúüñ]{3,}", re.I)
+CONTACT_OR_PRICE = re.compile(
+    r"https?://\S+|www\.\S+|@\w+|\+?\d[\d ()-]{7,}|"
+    r"(?:\d[\d\s.,]*\s*(?:€|eur\b|евро\b|₽|\$|грн\b))",
+    re.I,
+)
+VAGUE_RENTAL = re.compile(r"\b(?:летн\w*|краткосрочн\w*)\s+аренд\w*\b", re.I)
+RENTAL_SUBJECT = re.compile(
+    r"\b(?:квартир\w*|жиль[еёя]|дом\w*|вилл\w*|бунгал\w*|комнат\w*|"
+    r"студи\w*|апартамент\w*|авто\w*|машин\w*|яхт\w*)\b", re.I,
+)
 DATED_ACTIVITY = re.compile(
-    r"\b(?:поездк\w*|еду|їхат\w*|попут\w*|мероприят\w*|событи\w*|"
+    r"\b(?:поездк\w*|еду|їхат\w*|лечу|летит|лететь|попут\w*|мероприят\w*|событи\w*|"
     r"игр\w*|мафи\w*|мастер[\s-]?класс\w*|ретрит\w*|экскурси\w*|"
     r"спектакл\w*|концерт\w*|лагер\w*|"
     r"доступн[а-яіїєґ]*\s+с|сдам\s+с)\b",
@@ -29,6 +39,15 @@ MONTHS = {
     "січня": 1, "лютого": 2, "березня": 3, "квітня": 4,
     "травня": 5, "червня": 6, "липня": 7, "серпня": 8,
     "вересня": 9, "жовтня": 10, "листопада": 11, "грудня": 12,
+}
+WEEKDAYS = {
+    "понедельник": 0, "понедельника": 0, "понеділок": 0,
+    "вторник": 1, "вторника": 1, "вівторок": 1,
+    "среду": 2, "середу": 2,
+    "четверг": 3, "четверга": 3,
+    "пятницу": 4, "п'ятницю": 4,
+    "субботу": 5, "субботы": 5, "суботу": 5,
+    "воскресенье": 6, "неділю": 6,
 }
 
 
@@ -67,6 +86,20 @@ def _explicit_dates(text: str, period: str) -> list[date]:
     return found
 
 
+def _relative_dates(text: str, published: date) -> list[date]:
+    lowered = text.casefold()
+    found: list[date] = []
+    if re.search(r"\b(?:сегодня|сьогодні)\b", lowered):
+        found.append(published)
+    if re.search(r"\b(?:завтра)\b", lowered):
+        found.append(published + timedelta(days=1))
+    for word, weekday in WEEKDAYS.items():
+        if re.search(rf"\b{re.escape(word)}\b", lowered):
+            delta = (weekday - published.weekday()) % 7
+            found.append(published + timedelta(days=delta))
+    return found
+
+
 def _audit(con, period: str, message_id: int, decision: str, code: str,
            detail: str, confidence: str = "high") -> None:
     con.execute(
@@ -85,7 +118,8 @@ def prefilter(settings, period: str, as_of: str | None = None) -> dict[str, int]
               "excluded_expired": 0, "kept": 0}
     with connect(settings.db_path) as con:
         rows = con.execute(
-            """SELECT m.id,m.sender_id,m.source_text,e.excluded_reason,e.dedupe_reason
+            """SELECT m.id,m.sender_id,m.published_at,m.source_text,
+                      e.excluded_reason,e.dedupe_reason
                FROM messages m JOIN entries e ON e.message_id=m.id
                WHERE e.period_key=? ORDER BY m.message_id""",
             (period,),
@@ -102,18 +136,35 @@ def prefilter(settings, period: str, as_of: str | None = None) -> dict[str, int]
                        row["excluded_reason"])
                 continue
             text = " ".join(row["source_text"].split())
+            substance = " ".join(CONTACT_OR_PRICE.sub(" ", text).split())
             code = detail = ""
             if row["sender_id"] in settings.excluded_sender_ids:
                 code, detail = "author", f"sender_id={row['sender_id']}"
-            elif GENERIC_ONLY.fullmatch(text) or not SUBJECT_WORD.search(text):
+            elif (
+                GENERIC_ONLY.fullmatch(substance)
+                or not SUBJECT_WORD.search(substance)
+                or (VAGUE_RENTAL.search(substance) and not RENTAL_SUBJECT.search(substance))
+            ):
                 code, detail = "incomplete", "no identifiable product, service or request"
             else:
-                dates = _explicit_dates(text, period)
+                published = datetime.fromisoformat(row["published_at"]).date()
+                dates = _explicit_dates(text, period) + _relative_dates(text, published)
                 # Exclude only clearly date-bound activities when every explicit
                 # date is already over. A range reaching the cutoff/next month
                 # remains eligible.
                 if dates and DATED_ACTIVITY.search(text) and max(dates) < cutoff:
                     code, detail = "expired", f"latest explicit date={max(dates).isoformat()}; as_of={cutoff.isoformat()}"
+                elif (
+                    re.search(r"\b(?:только сегодня|лишь сегодня|акция\s+\w+|акція\s+\w+)\b", text, re.I)
+                    and dates and max(dates) < cutoff
+                ):
+                    code, detail = "expired", f"short-lived offer ended={max(dates).isoformat()}; as_of={cutoff.isoformat()}"
+                elif (
+                    DATED_ACTIVITY.search(text)
+                    and re.search(r"\b(?:в ближайшее время|в ближ\w* время)\b", text, re.I)
+                    and published + timedelta(days=7) < cutoff
+                ):
+                    code, detail = "expired", f"short-lived request expired after 7 days; as_of={cutoff.isoformat()}"
             if code:
                 con.execute(
                     """UPDATE entries SET eligible=0,excluded_reason=?,

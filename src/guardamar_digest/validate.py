@@ -16,7 +16,7 @@ PHONE = PHONE_NUMBER
 CONTACT = re.compile(r"https?://|www\.|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|@\w+", re.I)
 PRICE = re.compile(r"(?:\d[\d\s.,]*\s*(?:€|eur\b|евро\b|₽|\$|грн\b)|(?:€|\$)\s*\d)", re.I)
 GENERIC = re.compile(
-    r"^(?:объявление|продажа товара|прода[её]тся|стабільна ціна|"
+    r"^(?:объявление|продажа товара(?:\s+за)?|прода[её]тся|стабільна ціна|"
     r"возможно торг|рекомендация услуг)\W*$", re.I
 )
 UKRAINIAN_ONLY = re.compile(r"[іїєґ]", re.I)
@@ -206,6 +206,10 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
             errors.append(f"message {external_id}: price leaked into title")
         if GENERIC.fullmatch(title):
             errors.append(f"message {external_id}: generic non-informative title")
+        if len(title) > 100:
+            errors.append(f"message {external_id}: showcase title exceeds 100 characters")
+        if title.count("(") != title.count(")") or title.count("[") != title.count("]"):
+            errors.append(f"message {external_id}: unbalanced punctuation in title")
         if UKRAINIAN_ONLY.search(title):
             errors.append(f"message {external_id}: showcase title is not normalized to Russian")
         if row["sender_id"] in settings.excluded_sender_ids:

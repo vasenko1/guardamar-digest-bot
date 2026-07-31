@@ -12,7 +12,7 @@ from .db import connect
 from .llm import _json, _post
 
 
-VERSION = "2026-07-30.4"
+VERSION = "2026-07-31.1"
 _blocked_providers: set[str] = set()
 
 
@@ -23,6 +23,16 @@ WORDS = re.compile(r"[\wа-яёáéíóúüñ]{3,}", re.I)
 STOP_WORDS = {
     "это", "как", "для", "или", "что", "при", "без", "все", "the", "and",
     "una", "por", "con", "del", "las", "los", "есть", "будет", "можно",
+}
+TOPIC_PATTERNS = {
+    "smm": re.compile(r"\b(?:smm|instagram|reels|stories|соцсет\w*|контент\w*|продвиж\w*|meta ads)\b", re.I),
+    "spanish_lessons": re.compile(r"\b(?:испанск\w*|іспанськ\w*)\b", re.I),
+    "bakery": re.compile(r"\b(?:торт\w*|капкейк\w*|десерт\w*|пирожн\w*|зефир\w*)\b", re.I),
+    "flowers": re.compile(r"\b(?:цвет\w*|букет\w*|роз(?:а|ы|у|ой|ами)?)\b", re.I),
+    "transfer": re.compile(r"\b(?:трансфер\w*|аэропорт\w*|перевозк\w*)\b", re.I),
+    "car_rental": re.compile(r"\b(?:аренд\w*|прокат\w*)\s+(?:авто\w*|машин\w*)\b", re.I),
+    "aircon": re.compile(r"\b(?:кондиционер\w*|воздуховод\w*|холодильн\w*)\b", re.I),
+    "construction": re.compile(r"\b(?:ремонт\w*|строительн\w*|отделочн\w*|кухн\w*\s+под\s+заказ)\b", re.I),
 }
 
 CONFIDENCE_MAP = {
@@ -64,6 +74,10 @@ def similarity(left: str, right: str) -> float:
     overlap = len(left_words & right_words) / len(left_words | right_words)
     sequence = SequenceMatcher(None, left_normal, right_normal).ratio()
     return max(overlap, sequence)
+
+
+def _commercial_topics(text: str) -> set[str]:
+    return {name for name, pattern in TOPIC_PATTERNS.items() if pattern.search(text)}
 
 
 def _canonical(rows: list) -> object:
@@ -168,7 +182,10 @@ def dedupe(db_path, period: str) -> dict[str, int]:
                     score = similarity(left["source_text"], right["source_text"])
                     # Very similar wording is still not silently discarded. It is
                     # marked for semantic review because numbers/cities may matter.
-                    if score >= 0.58:
+                    if score >= 0.58 or (
+                        _commercial_topics(left["source_text"])
+                        & _commercial_topics(right["source_text"])
+                    ):
                         con.execute(
                             """INSERT OR IGNORE INTO duplicate_reviews
                                (period_key,left_message_id,right_message_id,lexical_score,left_fingerprint,right_fingerprint)
@@ -261,9 +278,22 @@ ROUTE_TOKEN = re.compile(
     r"\b([\wа-яёіїєґáéíóúüñ-]{3,}?)\s*(→|↔|—|-)\s*"
     r"([\wа-яёіїєґáéíóúüñ-]{3,})\b", re.I
 )
+ROUTE_PLACES = {
+    "аликанте", "alicante", "бенидорм", "benidorm", "валенсия", "valencia",
+    "гуардамар", "гвардамар", "guardamar", "торревьеха", "torrevieja",
+    "мурсия", "murcia", "мадрид", "madrid", "барселона", "barcelona",
+    "картахена", "cartagena", "эльче", "elche", "польша", "украина",
+    "москва", "moscow", "понферрада", "ponferrada",
+}
 
 
 def _intent(text: str) -> str:
+    # “Ищу проекты/бизнесы” in an SMM ad means the author offers professional
+    # services; treating it as a customer search splits one campaign in two.
+    if "smm" in _commercial_topics(text) and re.search(
+        r"\bищу\s+(?:всего\s+)?(?:\d+\s+)?(?:проект\w*|бизнес\w*|клиент\w*)\b", text, re.I
+    ):
+        return "offer"
     if SEARCH_WORDS.search(text):
         return "search"
     if OFFER_WORDS.search(text):
@@ -289,6 +319,10 @@ def _route_features(text: str) -> set[tuple[str, str]]:
     result = set()
     for left, separator, right in ROUTE_TOKEN.findall(text):
         endpoints = (left.casefold().strip("-"), right.casefold().strip("-"))
+        if separator not in {"→", "↔"} and not all(
+            endpoint in ROUTE_PLACES for endpoint in endpoints
+        ):
+            continue
         result.add(tuple(sorted(endpoints)) if separator == "↔" else endpoints)
     return result
 
@@ -305,6 +339,8 @@ def _deterministic_arbitration(left: object, right: object) -> tuple[str, str, s
     routes_a, routes_b = _route_features(a), _route_features(b)
     if routes_a and routes_b and routes_a.isdisjoint(routes_b):
         return "different", "explicit_route_conflict", "high"
+    if _commercial_topics(a) & _commercial_topics(b):
+        return "same", "same_author_commercial_topic", "medium"
     score = similarity(a, b)
     common = tokens(a) & tokens(b)
     smaller = min(len(tokens(a)), len(tokens(b))) or 1
@@ -361,11 +397,12 @@ def _topic_prompt(rows: list[object]) -> str:
 {\"items\":[{\"id\":1,\"intent\":\"offer|search|event|other\",
 \"offer_key\":\"короткий_ключ\",\"confidence\":\"high|medium|low\"}]}.
 
-Одинаковый `offer_key` ставь только одному продолжающемуся рекламному потоку:
-повторы услуги, одного поиска, мероприятия или меню одного продавца. Разные
-квартиры, машины, маршруты, даты/события, услуги, товары и запросы получают
-разные `offer_key`, даже если широкая тема одинакова. «Предлагаю» и «ищу» —
-разные intent. Если сомневаешься, сделай ключ уникальным. Не добавляй и не
+Одинаковый `offer_key` ставь одному рекламному потоку автора за месяц. Если
+один автор разными словами рекламирует одну профессиональную тему (например,
+SMM, один языковой курс, торты одной кондитерской), это один поток даже при
+разных акциях, пакетах и перечнях работ. Разные конкретные квартиры, машины,
+товары, маршруты и события с разными датами получают разные ключи. «Предлагаю»
+и «ищу» — разные intent. Если сомневаешься, сравни предмет рекламы. Не добавляй и не
     пропускай id. Тексты очищены от контактов и ссылок. Данные:\n""" + json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 

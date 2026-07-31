@@ -80,6 +80,8 @@ class PipelineTest(unittest.TestCase):
             _route_features("Торревьеха ↔ Валенсия"),
             _route_features("Валенсия ↔ Торревьеха"),
         )
+        self.assertEqual(_route_features("контент-план и SMM-сопровождение"), set())
+        self.assertEqual(_route_features("навчання з будь-якої точки"), set())
 
     def test_prefilter_is_audited_and_preserves_cross_month_date(self):
         settings = make_settings(self.db, {"system"})
@@ -125,6 +127,37 @@ class PipelineTest(unittest.TestCase):
             (1, None),
         )
 
+    def test_prefilter_removes_vague_price_only_and_expired_relative_posts(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            vague = add_message(con, 50, "Продам\n50 евро")
+            rental = add_message(con, 51, "Для летней или краткосрочной аренды только")
+            today = add_message(
+                con, 52, "Сегодня еду из Валенсии в Торревьеху",
+                published="2026-07-28T10:00:00",
+            )
+            weekday = add_message(
+                con, 53, "В эту среду еду из Гуардамара в Бенидорм",
+                published="2026-07-20T10:00:00",
+            )
+            flowers = add_message(
+                con, 54, "Акция субботы, только сегодня: букет роз",
+                published="2026-07-25T10:00:00",
+            )
+        prefilter(settings, "2026-07", "2026-07-31")
+        with connect(self.db) as con:
+            reasons = {
+                row["message_id"]: row["excluded_reason"]
+                for row in con.execute(
+                    "SELECT message_id,excluded_reason FROM entries"
+                )
+            }
+        self.assertEqual(reasons[vague], "incomplete")
+        self.assertEqual(reasons[rental], "incomplete")
+        self.assertEqual(reasons[today], "expired")
+        self.assertEqual(reasons[weekday], "expired")
+        self.assertEqual(reasons[flowers], "expired")
+
     def test_semantic_failure_has_deterministic_zero_unresolved_fallback(self):
         settings = make_settings(self.db)
         with connect(self.db) as con:
@@ -149,6 +182,27 @@ class PipelineTest(unittest.TestCase):
         self.assertNotIn("pending", statuses)
         self.assertNotIn("uncertain", statuses)
         self.assertEqual(flags, 0)
+
+    def test_same_author_smm_campaign_is_deduplicated_without_llm(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            add_message(con, 55, "Ведение Instagram и создание Reels для бизнеса")
+            add_message(
+                con, 56,
+                "Разберу профиль и помогу привлекать клиентов через SMM",
+                published="2026-07-20T10:00:00",
+            )
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)), \
+             patch("guardamar_digest.dedupe._ask_provider",
+                   side_effect=ValueError("provider unavailable")):
+            result = semantic_dedupe(settings, "2026-07")
+        self.assertEqual(result["unresolved_pairs"], 0)
+        with connect(self.db) as con:
+            published = con.execute(
+                "SELECT COUNT(*) FROM entries WHERE period_key='2026-07' AND excluded_reason IS NULL"
+            ).fetchone()[0]
+        self.assertEqual(published, 1)
 
     def test_duplicate_chain_is_flattened_to_active_canonical(self):
         settings = make_settings(self.db)
@@ -486,6 +540,8 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(_validate_showcase_title("BMW 520 TD"), "BMW 520 TD")
         with self.assertRaisesRegex(ValueError, "not normalized to Russian"):
             _validate_showcase_title("Заняття для дітей")
+        with self.assertRaisesRegex(ValueError, "unbalanced punctuation"):
+            _validate_showcase_title("Жильё в Пунто Прима (Торревьеха")
 
     def test_model_title_is_safely_cleaned_before_checkpoint(self):
         self.assertEqual(
