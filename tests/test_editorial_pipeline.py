@@ -558,6 +558,13 @@ class PipelineTest(unittest.TestCase):
             _sanitize_showcase_title("Hyundai i20 2014 1.2 127 тыс.км"),
             "Hyundai i20 2014 1.2 127 тыс.км",
         )
+        long_title = (
+            "Индивидуальный пошив и ремонт одежды, работа с кожей и мехом, "
+            "пошив штор, чехлов для мебели и выезд мастера для примерки"
+        )
+        shortened = _sanitize_showcase_title(long_title)
+        self.assertLessEqual(len(shortened), 100)
+        self.assertTrue(shortened.startswith("Индивидуальный пошив"))
 
     def test_single_object_json_array_is_unwrapped(self):
         self.assertEqual(_json('[{"entries": []}]'), {"entries": []})
@@ -591,6 +598,57 @@ class PipelineTest(unittest.TestCase):
                 "SELECT status FROM classification_runs WHERE period_key='2026-07'"
             ).fetchone()["status"]
         self.assertEqual(status, "running")
+
+    def test_changed_month_input_reuses_unchanged_classification_checkpoints(self):
+        base = make_settings(self.db)
+        settings = Settings(
+            base.root, base.db_path, base.source_username, base.source_chat_id,
+            "", "", "gemini-key", "test-model", "", "test",
+            base.excluded_sender_ids,
+        )
+        with connect(self.db) as con:
+            add_message(con, 60, "Продам стул IKEA")
+            add_message(con, 61, "Предлагаю лечебный массаж")
+        prefilter(settings, "2026-07")
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)):
+            semantic_dedupe(settings, "2026-07")
+        category = '{"categories":[{"code":"items","title":"Объявления","emoji":"📦"}]}'
+        first_responses = [
+            {"candidates": [{"content": {"parts": [{"text": category}]}}]},
+            {"candidates": [{"content": {"parts": [{"text":
+                '{"entries":[{"id":1,"include":true,"category":"items",'
+                '"title":"Стул IKEA","confidence":"high"}]}'
+            }]}}]},
+            {"candidates": [{"content": {"parts": [{"text":
+                '{"entries":[{"id":2,"include":true,"category":"items",'
+                '"title":"Лечебный массаж","confidence":"high"}]}'
+            }]}}]},
+        ]
+        with patch("guardamar_digest.llm._post", side_effect=first_responses):
+            classify(settings, "2026-07")
+
+        with connect(self.db) as con:
+            add_message(con, 62, "Ищу детское автокресло")
+        prefilter(settings, "2026-07")
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)):
+            semantic_dedupe(settings, "2026-07")
+        second_responses = [
+            {"candidates": [{"content": {"parts": [{"text": category}]}}]},
+            {"candidates": [{"content": {"parts": [{"text":
+                '{"entries":[{"id":3,"include":true,"category":"items",'
+                '"title":"Детское автокресло","confidence":"high"}]}'
+            }]}}]},
+        ]
+        with patch("guardamar_digest.llm._post", side_effect=second_responses) as post:
+            classify(settings, "2026-07")
+        self.assertEqual(post.call_count, 2)
+        with connect(self.db) as con:
+            titles = [row["short_title"] for row in con.execute(
+                "SELECT short_title FROM entries ORDER BY message_id"
+            )]
+        self.assertEqual(titles, ["Стул IKEA", "Лечебный массаж", "Детское автокресло"])
 
     def test_render_uses_plan_order_russian_month_and_linked_footer(self):
         settings = make_settings(self.db)

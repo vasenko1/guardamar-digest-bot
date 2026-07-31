@@ -67,6 +67,14 @@ def classification_signature(rows: list[dict]) -> str:
     ).hexdigest()
 
 
+def classification_item_fingerprint(row: dict) -> str:
+    return hashlib.sha256(
+        (CLASSIFIER_VERSION + json.dumps(
+            row, ensure_ascii=False, sort_keys=True
+        )).encode()
+    ).hexdigest()
+
+
 def _valid_category(category: object) -> bool:
     return (
         isinstance(category, dict)
@@ -115,6 +123,14 @@ def _sanitize_showcase_title(value: object) -> str:
     title = re.sub(r"\s*[·•|]+\s*", " ", title)
     title = re.sub(r"(?:\s*[-\N{EN DASH}\N{EM DASH},:;/]+\s*)*[)\]]+\s*$", "", title)
     title = re.sub(r"\s+", " ", title).strip(" ,;:|/\N{EN DASH}\N{EM DASH}-")
+    if len(title) > 100:
+        shortened = title[:100].rsplit(" ", 1)[0]
+        title = shortened.rstrip(" ,;:|/\N{EN DASH}\N{EM DASH}-")
+        # A cut inside a parenthetical detail must not leave invalid output.
+        if title.count("(") > title.count(")"):
+            title = title.rsplit("(", 1)[0].rstrip(" ,;:-")
+        if title.count("[") > title.count("]"):
+            title = title.rsplit("[", 1)[0].rstrip(" ,;:-")
     return _validate_showcase_title(title)
 
 
@@ -247,6 +263,9 @@ def classify(settings: Settings, period: str) -> str:
         ).fetchall()
     external_ids = {record["id"]: record["message_id"] for record in records}
     rows = prepare_rows(records)
+    item_fingerprints = {
+        row["id"]: classification_item_fingerprint(row) for row in rows
+    }
     if not rows:
         return "nothing to classify"
     signature=classification_signature(rows)
@@ -286,9 +305,55 @@ def classify(settings: Settings, period: str) -> str:
     if not fixed_categories: raise RuntimeError("Could not create category plan with free LLM providers")
     if not run or run["input_signature"]!=signature or not cached_plan_valid:
       run_id=uuid.uuid4().hex
+      previous_run_id = run["run_id"] if run else None
+      fixed_map = {category["code"]: category for category in fixed_categories}
       with connect(settings.db_path) as con:
         con.execute("INSERT OR REPLACE INTO classification_runs(period_key,run_id,input_signature,categories_json,status,lock_until) VALUES (?,?,?,?, 'running', datetime('now','+20 minutes'))",(period,run_id,signature,json.dumps(fixed_categories,ensure_ascii=False)))
-        con.execute("UPDATE entries SET category_code=NULL,category_title=NULL,category_emoji=NULL,short_title=NULL,confidence=NULL,provider=NULL,classification_run_id=NULL WHERE period_key=? AND manual_title IS NULL",(period,))
+        for row in rows:
+          existing = con.execute(
+            """SELECT eligible,category_code,short_title,classification_run_id,
+                      classification_fingerprint,classification_version
+               FROM entries WHERE period_key=? AND message_id=?""",
+            (period,row["id"]),
+          ).fetchone()
+          reusable = bool(
+            existing and existing["category_code"] in fixed_map
+            and existing["short_title"]
+            and (
+              (
+                existing["classification_version"] == CLASSIFIER_VERSION
+                and existing["classification_fingerprint"] == item_fingerprints[row["id"]]
+              )
+              or (
+                existing["classification_version"] is None
+                and previous_run_id
+                and existing["classification_run_id"] == previous_run_id
+              )
+            )
+          )
+          if reusable:
+            try:
+              _validate_showcase_title(existing["short_title"])
+            except ValueError:
+              reusable = False
+          if reusable:
+            category = fixed_map[existing["category_code"]]
+            con.execute(
+              """UPDATE entries SET category_title=?,category_emoji=?,
+                 classification_run_id=?,classification_fingerprint=?,
+                 classification_version=? WHERE period_key=? AND message_id=?""",
+              (category.get("title"),category.get("emoji"),run_id,
+               item_fingerprints[row["id"]],CLASSIFIER_VERSION,period,row["id"]),
+            )
+          else:
+            con.execute(
+              """UPDATE entries SET category_code=NULL,category_title=NULL,
+                 category_emoji=NULL,short_title=NULL,confidence=NULL,provider=NULL,
+                 classification_run_id=NULL,classification_fingerprint=NULL,
+                 classification_version=NULL WHERE period_key=? AND message_id=?
+                 AND manual_title IS NULL""",
+              (period,row["id"]),
+            )
     else:
       run_id=run["run_id"]
       with connect(settings.db_path) as con:
@@ -341,7 +406,7 @@ def classify(settings: Settings, period: str) -> str:
               title = _sanitize_showcase_title(entry.get("title"))
               if not isinstance(entry.get("include"),bool): raise ValueError("model response has non-boolean include")
               category=fixed_map[entry["category"]]
-              con.execute("UPDATE entries SET eligible=?,category_code=?,category_title=?,category_emoji=?,short_title=?,confidence=?,provider=?,classification_run_id=? WHERE message_id=? AND period_key=?",(int(entry["include"]),entry["category"],category.get("title"),category.get("emoji"),title,entry.get("confidence"),provider,run_id,entry["id"],period))
+              con.execute("UPDATE entries SET eligible=?,category_code=?,category_title=?,category_emoji=?,short_title=?,confidence=?,provider=?,classification_run_id=?,classification_fingerprint=?,classification_version=? WHERE message_id=? AND period_key=?",(int(entry["include"]),entry["category"],category.get("title"),category.get("emoji"),title,entry.get("confidence"),provider,run_id,item_fingerprints[entry["id"]],CLASSIFIER_VERSION,entry["id"],period))
             provider_used.append(provider); break
         except HTTPError as exc:
             errors.append(f"{provider}: HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:800]}")
