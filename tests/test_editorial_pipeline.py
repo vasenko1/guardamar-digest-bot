@@ -554,7 +554,12 @@ class PipelineTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bedrooms into rooms"):
             _validate_showcase_title(
                 "Аренда 4-комнатной квартиры",
-                "Сдаётся квартира с 4 спальнями",
+                "Сдаётся квартира с четырьмя спальнями",
+            )
+        with self.assertRaisesRegex(ValueError, "bedrooms into rooms"):
+            _validate_showcase_title(
+                "Аренда 4-комнатной квартиры",
+                "Apartment with 4 bedrooms near the sea",
             )
         with self.assertRaisesRegex(ValueError, "promotional detail"):
             _validate_showcase_title(
@@ -564,6 +569,8 @@ class PipelineTest(unittest.TestCase):
             _validate_showcase_title("Пошив одежды и штор в")
         with self.assertRaisesRegex(ValueError, "unnatural search phrase"):
             _validate_showcase_title("Поиск услуг по аренде автомобилей")
+        with self.assertRaisesRegex(ValueError, "adjacent prepositions"):
+            _validate_showcase_title("Сниму видеоролик за в Торревьехе")
         with self.assertRaisesRegex(ValueError, "outside their digest section"):
             _validate_category_assignment("Домашние торты", "Товары")
         _validate_category_assignment("Домашние торты", "Еда и цветы")

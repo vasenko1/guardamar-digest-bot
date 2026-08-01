@@ -62,6 +62,17 @@ PROMOTIONAL_DETAIL = re.compile(
     re.I,
 )
 UNNATURAL_TITLE = re.compile(r"^поиск\s+услуг\s+по\s+аренд", re.I)
+BROKEN_PREPOSITIONS = re.compile(
+    r"\b(?:за|от|до|из|для|на|в|с)\s+(?:за|от|до|из|для|на|в|с)\b",
+    re.I,
+)
+NUMBER_WORDS = {
+    "одна": "1", "одной": "1", "одну": "1",
+    "две": "2", "двух": "2", "двумя": "2",
+    "три": "3", "трех": "3", "трёх": "3", "тремя": "3",
+    "четыре": "4", "четырех": "4", "четырёх": "4", "четырьмя": "4",
+    "пять": "5", "пяти": "5", "пятью": "5",
+}
 SOURCE_SEEK = re.compile(
     r"(?:\b(?:ищу|ищем|сниму|куплю|требу(?:ется|ются))\b|"
     r"\b(?:мне|нам)\s+нуж(?:ен|на|ны)\b|"
@@ -154,12 +165,24 @@ def _validate_showcase_title(value: object, source_text: str = "") -> str:
         raise ValueError("model response title contains a promotional detail")
     if UNNATURAL_TITLE.search(title):
         raise ValueError("model response title uses an unnatural search phrase")
+    if BROKEN_PREPOSITIONS.search(title):
+        raise ValueError("model response contains adjacent prepositions")
     if source_text and SOURCE_SEEK.search(source_text) and not TITLE_SEEK.search(title):
         raise ValueError("model response changed a request into an offer")
-    bedrooms = re.search(r"\b(\d+)\s*спальн", source_text, re.I)
-    if bedrooms and re.search(
-        rf"\b{re.escape(bedrooms.group(1))}\s*[- ]?комнатн", title, re.I
-    ) and not re.search(rf"\b{re.escape(bedrooms.group(1))}\s*спальн", title, re.I):
+    bedrooms = re.search(
+        r"\b(\d+|одн(?:а|ой|у)|две|двух|двумя|три|тр[её]х|тремя|"
+        r"четыре|четыр[её]х|четырьмя|пять|пяти|пятью)\s*"
+        r"(?:спальн|bedrooms?\b|dormitorios?\b)",
+        source_text,
+        re.I,
+    )
+    bedroom_count = None
+    if bedrooms:
+        raw_count = bedrooms.group(1).casefold()
+        bedroom_count = raw_count if raw_count.isdigit() else NUMBER_WORDS.get(raw_count)
+    if bedroom_count and re.search(
+        rf"\b{re.escape(bedroom_count)}\s*[- ]?комнатн", title, re.I
+    ) and not re.search(rf"\b{re.escape(bedroom_count)}\s*спальн", title, re.I):
         raise ValueError("model response changed bedrooms into rooms")
     if title.count("(") != title.count(")") or title.count("[") != title.count("]"):
         raise ValueError("model response title has unbalanced punctuation")
@@ -273,6 +296,7 @@ Title — одна информативная строка, обычно 40–75
 Не повторяй в title название категории, не используй капслок и рекламные эпитеты.
 Сохраняй направление объявления: «ищу/сниму/куплю/требуется» нельзя превращать в предложение.
 Не добавляй скидки, акции, подарки и бесплатный пробный урок. Не обрывай строку на предлоге или союзе.
+После удаления цены перечитай фразу: не оставляй сочетания вроде «за в городе».
 Пиши естественно: вместо «поиск услуг по аренде автомобиля» — «ищу автомобиль в аренду».
 Не заменяй число спален числом комнат.
 Еду, выпечку, десерты и цветы помещай только в соответствующий раздел еды/цветов.
