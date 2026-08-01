@@ -87,10 +87,20 @@ OTHER_LOCATION_ALIASES = (
 
 
 def _required_location(source_text: str) -> tuple[str, tuple[str, ...]] | None:
-    """Return a non-Guardamar place emphasized near the start of an ad."""
-    lead = source_text[:180].casefold()
+    """Return a place explicitly emphasized as the ad's location.
+
+    Cities buried in a transfer coverage list are not mandatory: forcing the
+    first airport into the title would misrepresent a service covering Spain.
+    """
+    lines = [line.strip() for line in source_text.splitlines() if line.strip()]
+    candidates = lines[:1]
+    candidates.extend(
+        line for line in lines[1:]
+        if line.startswith(("📍", "Место:", "Локация:"))
+    )
+    emphasized = "\n".join(candidates).casefold()
     for display, aliases in OTHER_LOCATION_ALIASES:
-        if any(alias in lead for alias in aliases):
+        if any(alias in emphasized for alias in aliases):
             return display, aliases
     return None
 SOURCE_SEEK = re.compile(
