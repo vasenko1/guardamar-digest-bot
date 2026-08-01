@@ -589,6 +589,18 @@ class PipelineTest(unittest.TestCase):
             ),
             "Ремонт квартир под ключ",
         )
+        self.assertEqual(
+            _validate_showcase_title(
+                "Съёмка и монтаж видеороликов в Торревьехе",
+                "Сниму для тебя любой видеоролик: режиссура, съёмка и монтаж",
+            ),
+            "Съёмка и монтаж видеороликов в Торревьехе",
+        )
+        with self.assertRaisesRegex(ValueError, "request into an offer"):
+            _validate_showcase_title(
+                "Аренда квартиры в Торревьехе",
+                "Сниму студию или квартиру в Торревьехе на длительный срок",
+            )
         food, added = _ensure_editorial_categories([], [{"text": "Домашние торты"}])
         self.assertTrue(added)
         self.assertEqual(food[0]["title"], "Еда и доставка")
