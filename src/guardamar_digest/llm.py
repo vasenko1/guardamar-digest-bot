@@ -51,6 +51,43 @@ SANITIZE_CONTACT = re.compile(
     r"https?://\S+|www\.\S+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|@\w+|"
     + PHONE_NUMBER.pattern, re.I,
 )
+TITLE_MAX_LENGTH = 95
+DANGLING_END = re.compile(
+    r"\b(?:в|во|на|для|с|со|из|от|до|по|к|у|и|или|а|но|под|над|при|через)$",
+    re.I,
+)
+PROMOTIONAL_DETAIL = re.compile(
+    r"\b(?:скидк\w*|акци\w*|перв\w+\s+(?:урок|занят\w*)\s+"
+    r"(?:бесплат\w*|в\s+подарок)|в\s+подарок)\b",
+    re.I,
+)
+UNNATURAL_TITLE = re.compile(r"^поиск\s+услуг\s+по\s+аренд", re.I)
+SOURCE_SEEK = re.compile(
+    r"(?:\b(?:ищу|ищем|сниму|куплю|требу(?:ется|ются))\b|"
+    r"\b(?:мне|нам)\s+нуж(?:ен|на|ны)\b|"
+    r"(?:^|[.!?\n])\s*нуж(?:ен|на|ны)\b|"
+    r"\bактивн\w*\s+поиск\w*\b)",
+    re.I,
+)
+TITLE_SEEK = re.compile(
+    r"\b(?:ищу|ищем|ищет|сниму|куплю|нужен|нужна|нужны|требуется|поиск|ваканси\w*)\b",
+    re.I,
+)
+FOOD = re.compile(
+    r"\b(?:торт\w*|пирожн\w*|капкейк\w*|пряник\w*|выпечк\w*|"
+    r"ед[аы]|десерт\w*)\b",
+    re.I,
+)
+FLOWERS = re.compile(
+    r"\b(?:цвет(?:ы|ов|ок|ка|ки|ами|ах|очн\w*)|букет\w*|"
+    r"роз(?:а|ы|у|е|ой|ами|ах)?)\b",
+    re.I,
+)
+FOOD_CATEGORY = re.compile(
+    r"\b(?:ед[аы]|продукт\w*|выпечк\w*|десерт\w*|"
+    r"цвет(?:ы|ов|ок|ка|ки|ами|ах|очн\w*)|букет\w*)\b",
+    re.I,
+)
 
 
 def prepare_rows(records) -> list[dict]:
@@ -92,12 +129,14 @@ def _valid_category(category: object) -> bool:
     )
 
 
-def _validate_showcase_title(value: object) -> str:
+def _validate_showcase_title(value: object, source_text: str = "") -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("model response has empty title")
     title = " ".join(value.split())
-    if len(title) > 100:
-        raise ValueError("model response title is longer than 100 characters")
+    if len(title) > TITLE_MAX_LENGTH:
+        raise ValueError(
+            f"model response title is longer than {TITLE_MAX_LENGTH} characters"
+        )
     # A model/brand-only title such as "BMW 520 TD" is language-neutral and
     # valid. Ukrainian-specific letters, however, prove that prose was not
     # normalized to Russian as required.
@@ -109,12 +148,25 @@ def _validate_showcase_title(value: object) -> str:
         raise ValueError("model response title contains a price")
     if TITLE_GENERIC.fullmatch(title):
         raise ValueError("model response title is non-informative")
+    if DANGLING_END.search(title):
+        raise ValueError("model response title ends with a dangling word")
+    if PROMOTIONAL_DETAIL.search(title):
+        raise ValueError("model response title contains a promotional detail")
+    if UNNATURAL_TITLE.search(title):
+        raise ValueError("model response title uses an unnatural search phrase")
+    if source_text and SOURCE_SEEK.search(source_text) and not TITLE_SEEK.search(title):
+        raise ValueError("model response changed a request into an offer")
+    bedrooms = re.search(r"\b(\d+)\s*спальн", source_text, re.I)
+    if bedrooms and re.search(
+        rf"\b{re.escape(bedrooms.group(1))}\s*[- ]?комнатн", title, re.I
+    ) and not re.search(rf"\b{re.escape(bedrooms.group(1))}\s*спальн", title, re.I):
+        raise ValueError("model response changed bedrooms into rooms")
     if title.count("(") != title.count(")") or title.count("[") != title.count("]"):
         raise ValueError("model response title has unbalanced punctuation")
     return title
 
 
-def _sanitize_showcase_title(value: object) -> str:
+def _sanitize_showcase_title(value: object, source_text: str = "") -> str:
     """Remove forbidden data that can be deleted without changing the offer."""
     if not isinstance(value, str):
         raise ValueError("model response has empty title")
@@ -127,15 +179,45 @@ def _sanitize_showcase_title(value: object) -> str:
     title = re.sub(r"\s*[·•|]+\s*", " ", title)
     title = re.sub(r"(?:\s*[-\N{EN DASH}\N{EM DASH},:;/]+\s*)*[)\]]+\s*$", "", title)
     title = re.sub(r"\s+", " ", title).strip(" ,;:|/\N{EN DASH}\N{EM DASH}-")
-    if len(title) > 100:
-        shortened = title[:100].rsplit(" ", 1)[0]
+    if len(title) > TITLE_MAX_LENGTH:
+        shortened = title[:TITLE_MAX_LENGTH].rsplit(" ", 1)[0]
         title = shortened.rstrip(" ,;:|/\N{EN DASH}\N{EM DASH}-")
         # A cut inside a parenthetical detail must not leave invalid output.
         if title.count("(") > title.count(")"):
             title = title.rsplit("(", 1)[0].rstrip(" ,;:-")
         if title.count("[") > title.count("]"):
             title = title.rsplit("[", 1)[0].rstrip(" ,;:-")
-    return _validate_showcase_title(title)
+    while DANGLING_END.search(title):
+        title = title.rsplit(" ", 1)[0].rstrip(" ,;:|/\N{EN DASH}\N{EM DASH}-")
+    return _validate_showcase_title(title, source_text)
+
+
+def _validate_category_assignment(source_text: str, category_title: str) -> None:
+    if (FOOD.search(source_text) or FLOWERS.search(source_text)) and not FOOD_CATEGORY.search(category_title):
+        raise ValueError("food or flowers assigned outside their digest section")
+
+
+def _ensure_editorial_categories(categories: list[dict], rows: list[dict]) -> tuple[list[dict], bool]:
+    """Add a dynamic broad section only when this month's sample needs it."""
+    has_food = any(FOOD.search(row["text"]) for row in rows)
+    has_flowers = any(FLOWERS.search(row["text"]) for row in rows)
+    if not has_food and not has_flowers:
+        return categories, False
+    if any(FOOD_CATEGORY.search(category["title"]) for category in categories):
+        return categories, False
+    used = {category["code"] for category in categories}
+    code = "food_flowers"
+    suffix = 2
+    while code in used:
+        code = f"food_flowers_{suffix}"
+        suffix += 1
+    if has_food and has_flowers:
+        title, emoji = "Еда и цветы", "🍰🌸"
+    elif has_food:
+        title, emoji = "Еда и доставка", "🍰"
+    else:
+        title, emoji = "Цветы и букеты", "🌸"
+    return [*categories, {"code": code, "title": title, "emoji": emoji}], True
 
 
 def _post(url: str, headers: dict[str, str], body: dict) -> dict:
@@ -187,8 +269,13 @@ def prompt(rows: list[dict], categories: list[dict] | None = None) -> str:
         return """Верни ТОЛЬКО JSON: {\"entries\":[{\"id\":1,\"include\":true,\"category\":\"разрешённый_code\",\"title\":\"...\",\"confidence\":\"high|low\"}]}.
 Для КАЖДОГО переданного id верни ровно один объект. Используй только разрешённые категории. Не пиши цену, контакты, URL; другой город укажи. Если это не самостоятельное объявление, include=false, но title всё равно заполни кратко.
 Витринная строка ВСЕГДА на русском, даже если исходник на украинском, испанском или английском. Имена, бренды, города и даты сохраняй.
-Title — одна информативная строка, обычно 40–75 и максимум 100 символов.
+Title — одна информативная строка, обычно 40–75 и максимум 95 символов.
 Не повторяй в title название категории, не используй капслок и рекламные эпитеты.
+Сохраняй направление объявления: «ищу/сниму/куплю/требуется» нельзя превращать в предложение.
+Не добавляй скидки, акции, подарки и бесплатный пробный урок. Не обрывай строку на предлоге или союзе.
+Пиши естественно: вместо «поиск услуг по аренде автомобиля» — «ищу автомобиль в аренду».
+Не заменяй число спален числом комнат.
+Еду, выпечку, десерты и цветы помещай только в соответствующий раздел еды/цветов.
 Включай только конкретное предложение или запрос товара, услуги, жилья, работы, транспорта, обучения либо мероприятия. Погода, новости, отзывы, обсуждения и общие вопросы без конкретного запроса — include=false.
 Разрешённые категории: """ + json.dumps(categories, ensure_ascii=False) + "\nДанные:\n" + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     return """Ты редактор ежемесячного Telegram-дайджеста городской группы Гуардамар.
@@ -266,6 +353,7 @@ def classify(settings: Settings, period: str) -> str:
             (period,),
         ).fetchall()
     external_ids = {record["id"]: record["message_id"] for record in records}
+    source_texts = {record["id"]: record["source_text"] for record in records}
     rows = prepare_rows(records)
     item_fingerprints = {
         row["id"]: classification_item_fingerprint(row) for row in rows
@@ -307,6 +395,12 @@ def classify(settings: Settings, period: str) -> str:
         fixed_categories=None
       except Exception: continue
     if not fixed_categories: raise RuntimeError("Could not create category plan with free LLM providers")
+    fixed_categories, categories_added = _ensure_editorial_categories(
+      fixed_categories,
+      [{"text": source_texts[row["id"]]} for row in rows],
+    )
+    if categories_added:
+      cached_plan_valid = False
     if not run or run["input_signature"]!=signature or not cached_plan_valid:
       run_id=uuid.uuid4().hex
       previous_run_id = run["run_id"] if run else None
@@ -337,7 +431,12 @@ def classify(settings: Settings, period: str) -> str:
           )
           if reusable:
             try:
-              _validate_showcase_title(existing["short_title"])
+              source_text = source_texts[row["id"]]
+              _validate_showcase_title(existing["short_title"], source_text)
+              if existing["eligible"]:
+                _validate_category_assignment(
+                  source_text, fixed_map[existing["category_code"]]["title"]
+                )
             except ValueError:
               reusable = False
           if reusable:
@@ -367,6 +466,36 @@ def classify(settings: Settings, period: str) -> str:
              WHERE period_key=? AND run_id=?""",
           (period,run_id),
         )
+    # A completed run from an older editorial validator may contain a title
+    # that is formally valid but changes intent or ends mid-phrase. Remove only
+    # those checkpoints; all other LLM work remains reusable.
+    fixed_map = {category["code"]: category for category in fixed_categories}
+    row_map = {row["id"]: row for row in rows}
+    with connect(settings.db_path) as con:
+      checkpoints = con.execute(
+        """SELECT message_id,eligible,category_code,short_title FROM entries
+           WHERE period_key=? AND classification_run_id=? AND manual_title IS NULL""",
+        (period, run_id),
+      ).fetchall()
+      for checkpoint in checkpoints:
+        row = row_map.get(checkpoint["message_id"])
+        category = fixed_map.get(checkpoint["category_code"])
+        try:
+          if row is None or category is None:
+            raise ValueError("checkpoint is outside the current input plan")
+          source_text = source_texts[checkpoint["message_id"]]
+          _validate_showcase_title(checkpoint["short_title"], source_text)
+          if checkpoint["eligible"]:
+            _validate_category_assignment(source_text, category["title"])
+        except ValueError:
+          con.execute(
+            """UPDATE entries SET category_code=NULL,category_title=NULL,
+               category_emoji=NULL,short_title=NULL,confidence=NULL,provider=NULL,
+               classification_run_id=NULL,classification_fingerprint=NULL,
+               classification_version=NULL
+               WHERE period_key=? AND message_id=? AND manual_title IS NULL""",
+            (period, checkpoint["message_id"]),
+          )
     provider_used = []
     all_entries = []
     with connect(settings.db_path) as con:
@@ -408,9 +537,12 @@ def classify(settings: Settings, period: str) -> str:
             if any(entry.get("category") not in fixed_map for entry in returned): raise ValueError("model used a category outside the fixed plan")
             with connect(settings.db_path) as con:
               entry=returned[0]
-              title = _sanitize_showcase_title(entry.get("title"))
+              source_text = source_texts[entry["id"]]
+              title = _sanitize_showcase_title(entry.get("title"), source_text)
               if not isinstance(entry.get("include"),bool): raise ValueError("model response has non-boolean include")
               category=fixed_map[entry["category"]]
+              if entry["include"]:
+                _validate_category_assignment(source_text, category["title"])
               con.execute("UPDATE entries SET eligible=?,category_code=?,category_title=?,category_emoji=?,short_title=?,confidence=?,provider=?,classification_run_id=?,classification_fingerprint=?,classification_version=? WHERE message_id=? AND period_key=?",(int(entry["include"]),entry["category"],category.get("title"),category.get("emoji"),title,entry.get("confidence"),provider,run_id,item_fingerprints[entry["id"]],CLASSIFIER_VERSION,entry["id"],period))
             provider_used.append(provider); break
         except HTTPError as exc:

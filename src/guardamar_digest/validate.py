@@ -9,7 +9,14 @@ from .db import connect
 from .dedupe import VERSION as DEDUPE_VERSION
 from .prefilter import VERSION as PREFILTER_VERSION, _period_cutoff
 from .render import telegram_length
-from .llm import PHONE_NUMBER, classification_signature, prepare_rows
+from .llm import (
+    PHONE_NUMBER,
+    TITLE_MAX_LENGTH,
+    _validate_category_assignment,
+    _validate_showcase_title,
+    classification_signature,
+    prepare_rows,
+)
 
 
 PHONE = PHONE_NUMBER
@@ -180,7 +187,8 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
         if missing:
             errors.append(f"{missing} eligible candidates were not classified in the current run")
         rows = con.execute(
-            """SELECT m.message_id,m.sender_id,m.source_url,e.short_title,e.manual_title,
+            """SELECT m.message_id,m.sender_id,m.source_url,m.source_text,
+                      e.short_title,e.manual_title,
                       e.category_code,e.category_title,e.manual_category
                FROM entries e JOIN messages m ON m.id=e.message_id
                WHERE e.period_key=? AND e.eligible=1 AND e.excluded_reason IS NULL""",
@@ -206,12 +214,22 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
             errors.append(f"message {external_id}: price leaked into title")
         if GENERIC.fullmatch(title):
             errors.append(f"message {external_id}: generic non-informative title")
-        if len(title) > 100:
-            errors.append(f"message {external_id}: showcase title exceeds 100 characters")
+        if len(title) > TITLE_MAX_LENGTH:
+            errors.append(
+                f"message {external_id}: showcase title exceeds {TITLE_MAX_LENGTH} characters"
+            )
         if title.count("(") != title.count(")") or title.count("[") != title.count("]"):
             errors.append(f"message {external_id}: unbalanced punctuation in title")
         if UKRAINIAN_ONLY.search(title):
             errors.append(f"message {external_id}: showcase title is not normalized to Russian")
+        try:
+            _validate_showcase_title(title, row["source_text"])
+        except ValueError as exc:
+            errors.append(f"message {external_id}: {exc}")
+        try:
+            _validate_category_assignment(row["source_text"], category)
+        except ValueError as exc:
+            errors.append(f"message {external_id}: {exc}")
         if row["sender_id"] in settings.excluded_sender_ids:
             errors.append(f"message {external_id}: excluded author reached publication")
         expected_url = f"{expected_prefix}{external_id}"

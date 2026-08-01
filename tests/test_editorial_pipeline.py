@@ -14,7 +14,9 @@ from guardamar_digest.dedupe import dedupe, semantic_dedupe
 from guardamar_digest.importer import import_export
 from guardamar_digest.llm import (
     _json,
+    _ensure_editorial_categories,
     _sanitize_showcase_title,
+    _validate_category_assignment,
     _validate_showcase_title,
     classify,
     classification_signature,
@@ -543,6 +545,53 @@ class PipelineTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unbalanced punctuation"):
             _validate_showcase_title("Жильё в Пунто Прима (Торревьеха")
 
+    def test_editorial_title_rules_preserve_intent_and_facts(self):
+        with self.assertRaisesRegex(ValueError, "request into an offer"):
+            _validate_showcase_title(
+                "Аренда квартиры для семьи",
+                "Мы в активном поиске квартиры для семьи",
+            )
+        with self.assertRaisesRegex(ValueError, "bedrooms into rooms"):
+            _validate_showcase_title(
+                "Аренда 4-комнатной квартиры",
+                "Сдаётся квартира с 4 спальнями",
+            )
+        with self.assertRaisesRegex(ValueError, "promotional detail"):
+            _validate_showcase_title(
+                "Курсы английского, первый урок в подарок"
+            )
+        with self.assertRaisesRegex(ValueError, "dangling word"):
+            _validate_showcase_title("Пошив одежды и штор в")
+        with self.assertRaisesRegex(ValueError, "unnatural search phrase"):
+            _validate_showcase_title("Поиск услуг по аренде автомобилей")
+        with self.assertRaisesRegex(ValueError, "outside their digest section"):
+            _validate_category_assignment("Домашние торты", "Товары")
+        _validate_category_assignment("Домашние торты", "Еда и цветы")
+        _validate_category_assignment("Установка розеток", "Бытовые услуги")
+        self.assertEqual(
+            _validate_showcase_title(
+                "Вакансии кузовщика и сварщика",
+                "В автосервис требуются кузовщик и сварщик",
+            ),
+            "Вакансии кузовщика и сварщика",
+        )
+        self.assertEqual(
+            _validate_showcase_title(
+                "Ремонт квартир под ключ",
+                "Если вам нужны ремонтные работы, обращайтесь",
+            ),
+            "Ремонт квартир под ключ",
+        )
+        food, added = _ensure_editorial_categories([], [{"text": "Домашние торты"}])
+        self.assertTrue(added)
+        self.assertEqual(food[0]["title"], "Еда и доставка")
+        flowers, _ = _ensure_editorial_categories([], [{"text": "Доставка букетов"}])
+        self.assertEqual(flowers[0]["title"], "Цветы и букеты")
+        both, _ = _ensure_editorial_categories(
+            [], [{"text": "Домашние торты"}, {"text": "Доставка букетов"}]
+        )
+        self.assertEqual(both[0]["title"], "Еда и цветы")
+
     def test_model_title_is_safely_cleaned_before_checkpoint(self):
         self.assertEqual(
             _sanitize_showcase_title(
@@ -639,6 +688,104 @@ class PipelineTest(unittest.TestCase):
             ).fetchone()
         self.assertEqual(dict(row), {"short_title": "Маникюр", "provider": "gemini"})
 
+    def test_classification_repairs_only_invalid_completed_checkpoint(self):
+        base = make_settings(self.db)
+        settings = Settings(
+            base.root, base.db_path, base.source_username, base.source_chat_id,
+            "", "", "gemini-key", "test-model", "", "test",
+            base.excluded_sender_ids,
+        )
+        with connect(self.db) as con:
+            message_id = add_message(con, 63, "Ищем квартиру для семьи")
+        prefilter(settings, "2026-07")
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)):
+            semantic_dedupe(settings, "2026-07")
+        categories = [{"code": "realestate", "title": "Недвижимость", "emoji": "🏠"}]
+        with connect(self.db) as con:
+            signature = current_classification_signature(con, "2026-07")
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run',?,?, 'complete')""",
+                (signature, json.dumps(categories, ensure_ascii=False)),
+            )
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='realestate',
+                   category_title='Недвижимость',category_emoji='🏠',
+                   short_title='Аренда квартиры для семьи',classification_run_id='run'
+                   WHERE message_id=?""",
+                (message_id,),
+            )
+        response = {"candidates": [{"content": {"parts": [{"text":
+            '{"entries":[{"id":1,"include":true,"category":"realestate",'
+            '"title":"Семья ищет квартиру","confidence":"high"}]}'
+        }]}}]}
+        with patch("guardamar_digest.llm._post", return_value=response) as post:
+            self.assertEqual(classify(settings, "2026-07"), "gemini")
+        self.assertEqual(post.call_count, 1)
+        with connect(self.db) as con:
+            row = con.execute(
+                "SELECT short_title,classification_run_id FROM entries WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+        self.assertEqual(row["short_title"], "Семья ищет квартиру")
+        self.assertEqual(row["classification_run_id"], "run")
+
+    def test_classification_adds_food_section_and_reuses_other_checkpoint(self):
+        base = make_settings(self.db)
+        settings = Settings(
+            base.root, base.db_path, base.source_username, base.source_chat_id,
+            "", "", "gemini-key", "test-model", "", "test",
+            base.excluded_sender_ids,
+        )
+        with connect(self.db) as con:
+            chair = add_message(con, 64, "Продам стул IKEA")
+            cakes = add_message(con, 65, "Домашние торты и пирожные")
+        prefilter(settings, "2026-07")
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)):
+            semantic_dedupe(settings, "2026-07")
+        categories = [{"code": "goods", "title": "Товары", "emoji": "🛍"}]
+        with connect(self.db) as con:
+            signature = current_classification_signature(con, "2026-07")
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','old',?,?, 'complete')""",
+                (signature, json.dumps(categories, ensure_ascii=False)),
+            )
+            for message_id, title in ((chair, "Стул IKEA"), (cakes, "Домашние торты и пирожные")):
+                con.execute(
+                    """UPDATE entries SET eligible=1,category_code='goods',
+                       category_title='Товары',category_emoji='🛍',short_title=?,
+                       classification_run_id='old' WHERE message_id=?""",
+                    (title, message_id),
+                )
+        response = {"candidates": [{"content": {"parts": [{"text":
+            '{"entries":[{"id":2,"include":true,"category":"food_flowers",'
+            '"title":"Домашние торты и пирожные","confidence":"high"}]}'
+        }]}}]}
+        with patch("guardamar_digest.llm._post", return_value=response) as post:
+            self.assertEqual(classify(settings, "2026-07"), "gemini")
+        self.assertEqual(post.call_count, 1)
+        with connect(self.db) as con:
+            rows = con.execute(
+                "SELECT short_title,category_title FROM entries ORDER BY message_id"
+            ).fetchall()
+            run = con.execute(
+                "SELECT categories_json,status FROM classification_runs WHERE period_key='2026-07'"
+            ).fetchone()
+        self.assertEqual(
+            [dict(row) for row in rows],
+            [
+                {"short_title": "Стул IKEA", "category_title": "Товары"},
+                {"short_title": "Домашние торты и пирожные", "category_title": "Еда и доставка"},
+            ],
+        )
+        self.assertIn('"title": "Еда и доставка"', run["categories_json"])
+        self.assertEqual(run["status"], "complete")
+
     def test_changed_month_input_reuses_unchanged_classification_checkpoints(self):
         base = make_settings(self.db)
         settings = Settings(
@@ -678,7 +825,7 @@ class PipelineTest(unittest.TestCase):
             {"candidates": [{"content": {"parts": [{"text": category}]}}]},
             {"candidates": [{"content": {"parts": [{"text":
                 '{"entries":[{"id":3,"include":true,"category":"items",'
-                '"title":"Детское автокресло","confidence":"high"}]}'
+                '"title":"Ищу детское автокресло","confidence":"high"}]}'
             }]}}]},
         ]
         with patch("guardamar_digest.llm._post", side_effect=second_responses) as post:
@@ -688,7 +835,7 @@ class PipelineTest(unittest.TestCase):
             titles = [row["short_title"] for row in con.execute(
                 "SELECT short_title FROM entries ORDER BY message_id"
             )]
-        self.assertEqual(titles, ["Стул IKEA", "Лечебный массаж", "Детское автокресло"])
+        self.assertEqual(titles, ["Стул IKEA", "Лечебный массаж", "Ищу детское автокресло"])
 
     def test_render_uses_plan_order_russian_month_and_linked_footer(self):
         settings = make_settings(self.db)
