@@ -554,7 +554,7 @@ class PipelineTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bedrooms into rooms"):
             _validate_showcase_title(
                 "Аренда 4-комнатной квартиры",
-                "Сдаётся квартира с четырьмя спальнями",
+                "Сдаётся квартира с четырьмя отдельными спальнями",
             )
         with self.assertRaisesRegex(ValueError, "bedrooms into rooms"):
             _validate_showcase_title(
@@ -571,6 +571,18 @@ class PipelineTest(unittest.TestCase):
             _validate_showcase_title("Поиск услуг по аренде автомобилей")
         with self.assertRaisesRegex(ValueError, "adjacent prepositions"):
             _validate_showcase_title("Сниму видеоролик за в Торревьехе")
+        with self.assertRaisesRegex(ValueError, "omitted the outside location"):
+            _validate_showcase_title(
+                "Снимаю и монтирую видеоролики",
+                "РИЛС #ТОРРЕВЬЕХА. Сниму для тебя любой видеоролик",
+            )
+        self.assertEqual(
+            _sanitize_showcase_title(
+                "Поездка Торревьеха — Валенсия (ДП Документ) 3 августа",
+                "Торревьеха-Валенсия (ДП Документ), возьму попутчиков",
+            ),
+            "Поездка Торревьеха — Валенсия 3 августа",
+        )
         with self.assertRaisesRegex(ValueError, "outside their digest section"):
             _validate_category_assignment("Домашние торты", "Товары")
         _validate_category_assignment("Домашние торты", "Еда и цветы")

@@ -73,6 +73,26 @@ NUMBER_WORDS = {
     "четыре": "4", "четырех": "4", "четырёх": "4", "четырьмя": "4",
     "пять": "5", "пяти": "5", "пятью": "5",
 }
+OPERATIONAL_MARKER = re.compile(r"\(\s*дп\s+документ\s*\)", re.I)
+OTHER_LOCATION_ALIASES = (
+    ("Торревьеха", ("торревьех", "торривьех", "torrevieja")),
+    ("Аликанте", ("аликанте", "alicante")),
+    ("Валенсия", ("валенси", "valencia")),
+    ("Бенидорм", ("бенидорм", "benidorm")),
+    ("Эльче", ("эльче", "elche")),
+    ("Санта-Пола", ("санта-пол", "санта пол", "santa pola")),
+    ("Ла-Марина", ("ла-марин", "ла марин", "la marina")),
+    ("Альморади", ("альморади", "almoradi")),
+)
+
+
+def _required_location(source_text: str) -> tuple[str, tuple[str, ...]] | None:
+    """Return a non-Guardamar place emphasized near the start of an ad."""
+    lead = source_text[:180].casefold()
+    for display, aliases in OTHER_LOCATION_ALIASES:
+        if any(alias in lead for alias in aliases):
+            return display, aliases
+    return None
 SOURCE_SEEK = re.compile(
     r"(?:\b(?:ищу|ищем|куплю|требу(?:ется|ются))\b|"
     r"\bсниму\b[^.!?\n]{0,80}\b(?:квартир\w*|дом\w*|жиль[еёя]|комнат\w*|"
@@ -169,12 +189,21 @@ def _validate_showcase_title(value: object, source_text: str = "") -> str:
         raise ValueError("model response title uses an unnatural search phrase")
     if BROKEN_PREPOSITIONS.search(title):
         raise ValueError("model response contains adjacent prepositions")
+    if OPERATIONAL_MARKER.search(title):
+        raise ValueError("model response contains an internal trip marker")
+    required_location = _required_location(source_text) if source_text else None
+    if required_location and not any(
+        alias in title.casefold() for alias in required_location[1]
+    ):
+        raise ValueError(
+            f"model response omitted the outside location {required_location[0]}"
+        )
     if source_text and SOURCE_SEEK.search(source_text) and not TITLE_SEEK.search(title):
         raise ValueError("model response changed a request into an offer")
     bedrooms = re.search(
         r"\b(\d+|одн(?:а|ой|у)|две|двух|двумя|три|тр[её]х|тремя|"
         r"четыре|четыр[её]х|четырьмя|пять|пяти|пятью)\s*"
-        r"(?:спальн|bedrooms?\b|dormitorios?\b)",
+        r"(?:[^\W\d_]+\s+){0,3}(?:спальн|bedrooms?\b|dormitorios?\b)",
         source_text,
         re.I,
     )
@@ -201,6 +230,7 @@ def _sanitize_showcase_title(value: object, source_text: str = "") -> str:
     # removable; the result is validated again below.
     title = TITLE_CONTACT.sub(" ", title)
     title = TITLE_PRICE.sub(" ", title)
+    title = OPERATIONAL_MARKER.sub(" ", title)
     title = re.sub(r"\s*[·•|]+\s*", " ", title)
     title = re.sub(r"(?:\s*[-\N{EN DASH}\N{EM DASH},:;/]+\s*)*[)\]]+\s*$", "", title)
     title = re.sub(r"\s+", " ", title).strip(" ,;:|/\N{EN DASH}\N{EM DASH}-")
@@ -301,6 +331,7 @@ Title — одна информативная строка, обычно 40–75
 После удаления цены перечитай фразу: не оставляй сочетания вроде «за в городе».
 Пиши естественно: вместо «поиск услуг по аренде автомобиля» — «ищу автомобиль в аренду».
 Не заменяй число спален числом комнат.
+Не переноси в title внутреннюю цель поездки «ДП Документ». Если другой город указан в начале объявления, обязательно сохрани его.
 Еду, выпечку, десерты и цветы помещай только в соответствующий раздел еды/цветов.
 Включай только конкретное предложение или запрос товара, услуги, жилья, работы, транспорта, обучения либо мероприятия. Погода, новости, отзывы, обсуждения и общие вопросы без конкретного запроса — include=false.
 Разрешённые категории: """ + json.dumps(categories, ensure_ascii=False) + "\nДанные:\n" + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
