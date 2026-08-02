@@ -77,6 +77,7 @@ class ValidationResult:
 
 def validate_period(settings, period: str, rendered_parts: list[str] | None = None) -> ValidationResult:
     errors: list[str] = []
+    warnings: list[str] = []
     if not TELEGRAM_USERNAME.fullmatch(settings.source_username):
         errors.append("TELEGRAM_SOURCE_USERNAME is missing or invalid")
     with connect(settings.db_path) as con:
@@ -250,7 +251,9 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
         seen_urls.add(row["source_url"])
         title_key = (category.casefold(), " ".join(title.casefold().split()))
         if title_key in seen_titles:
-            errors.append(f"message {external_id}: duplicate title inside category")
+            warnings.append(
+                f"message {external_id}: repeated compact title inside category"
+            )
         seen_titles.add(title_key)
     if not rows:
         errors.append("digest has no publishable entries")
@@ -264,4 +267,6 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
             parser.close()
         except ValueError as exc:
             errors.append(f"part {number}: invalid Telegram HTML: {exc}")
-    return ValidationResult(tuple(dict.fromkeys(errors)))
+    return ValidationResult(
+        tuple(dict.fromkeys(errors)), tuple(dict.fromkeys(warnings))
+    )

@@ -474,6 +474,38 @@ class PipelineTest(unittest.TestCase):
         )
         self.assertTrue(validate_period(settings, "2026-07", [part]).ok)
 
+    def test_validator_warns_but_does_not_block_repeated_compact_titles(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            first = add_message(
+                con, 33, "Ищу квартиру на долгий срок", "tenant-one"
+            )
+            second = add_message(
+                con, 34, "Ищу квартиру для семьи долгосрочно", "tenant-two"
+            )
+        prefilter(settings, "2026-07")
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)):
+            semantic_dedupe(settings, "2026-07")
+        with connect(self.db) as con:
+            signature = current_classification_signature(con, "2026-07")
+            con.execute(
+                """UPDATE entries SET category_code='realestate_seek',
+                   category_title='Сниму в аренду',category_emoji='🏠',
+                   short_title='Квартиру, длительно',classification_run_id='run'
+                   WHERE message_id IN (?,?)""",
+                (first, second),
+            )
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run',?,'[]','complete')""",
+                (signature,),
+            )
+        result = validate_period(settings, "2026-07")
+        self.assertTrue(result.ok, result.errors)
+        self.assertTrue(any("repeated compact title" in item for item in result.warnings))
+
     def test_validator_rejects_changed_text_with_old_classification_run(self):
         settings = make_settings(self.db)
         with connect(self.db) as con:
