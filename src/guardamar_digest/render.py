@@ -4,6 +4,7 @@ import html
 import json
 from collections import defaultdict
 from .db import connect
+from .llm import _required_location
 
 
 LIMIT = 3600
@@ -46,13 +47,14 @@ def render(settings, period: str) -> list[str]:
             for index, item in enumerate(category_plan)
             if isinstance(item, dict) and item.get("code")
         }
-        rows = con.execute("""SELECT e.*,m.source_url FROM entries e JOIN messages m ON m.id=e.message_id
+        rows = con.execute("""SELECT e.*,m.source_url,m.source_text FROM entries e JOIN messages m ON m.id=e.message_id
           WHERE e.period_key=? AND e.eligible=1 AND e.excluded_reason IS NULL""", (period,)).fetchall()
         rows = sorted(
             rows,
             key=lambda row: (
                 category_order.get(row["category_code"], len(category_order)),
                 row["category_title"] or "",
+                1 if _required_location(row["source_text"]) else 0,
                 row["short_title"] or "",
             ),
         )

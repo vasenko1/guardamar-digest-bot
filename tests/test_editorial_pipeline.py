@@ -1000,6 +1000,45 @@ class PipelineTest(unittest.TestCase):
             output,
         )
 
+    def test_render_moves_explicit_other_city_to_end_of_each_category(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            outside = add_message(con, 80, "Аликанте. Предлагаю массаж")
+            local = add_message(con, 81, "Предлагаю массаж в Гуардамаре")
+            coverage = add_message(
+                con, 82,
+                "Предлагаю трансфер\nАэропорты Аликанте, Валенсия и Мурсия",
+            )
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='services',
+                   category_title='Услуги',category_emoji='🛠',
+                   classification_run_id='run' WHERE message_id IN (?,?,?)""",
+                (outside, local, coverage),
+            )
+            con.execute(
+                "UPDATE entries SET short_title='Массаж, Аликанте' WHERE message_id=?",
+                (outside,),
+            )
+            con.execute(
+                "UPDATE entries SET short_title='Массаж' WHERE message_id=?",
+                (local,),
+            )
+            con.execute(
+                "UPDATE entries SET short_title='Услуги трансфера' WHERE message_id=?",
+                (coverage,),
+            )
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run','sig',?,'complete')""",
+                (json.dumps([
+                    {"code": "services", "title": "Услуги", "emoji": "🛠"},
+                ], ensure_ascii=False),),
+            )
+        output = "\n".join(render(settings, "2026-07"))
+        self.assertLess(output.index("Массаж "), output.index("Услуги трансфера"))
+        self.assertLess(output.index("Услуги трансфера"), output.index("Массаж, Аликанте"))
+
     def test_render_nests_realestate_intent_subsections(self):
         settings = make_settings(self.db)
         with connect(self.db) as con:
