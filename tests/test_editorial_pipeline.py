@@ -670,6 +670,14 @@ class PipelineTest(unittest.TestCase):
             _compact_realestate_title("Сниму студию с 1 спальней"),
             "Студию, 1 спальня",
         )
+        self.assertEqual(
+            _compact_checkpoint_title(
+                "Три пары джинсов в хорошем состоянии, продаются комплектом в городе Эльче",
+                "Три пары джинсов в хорошем состоянии, продаются комплектом в городе Эльче",
+                "Товары и личные вещи",
+            ),
+            "Три пары джинсов, продаются комплектом, Эльче",
+        )
         categories, changed = _ensure_realestate_categories(
             [{"code": "housing", "title": "Недвижимость", "emoji": "🏠"}],
             [

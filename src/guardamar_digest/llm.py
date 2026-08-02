@@ -165,7 +165,8 @@ CAR_INLINE_TECHNICAL = re.compile(
 )
 COMPACT_FLUFF = re.compile(
     r"\b(?:профессиональн\w*|качественн\w*|комфортн\w*|"
-    r"в\s+отличном\s+состоянии|готов\w*\s+приступить\s+к\s+обязанностям)\b",
+    r"в\s+(?:отличном|хорошем)\s+состоянии|"
+    r"готов\w*\s+приступить\s+к\s+обязанностям)\b",
     re.I,
 )
 
@@ -427,6 +428,26 @@ def _compact_checkpoint_title(title: str, source_text: str, category_title: str)
                     alias in compact.casefold() for alias in location[1]
                 ):
                     compact = f"{compact}, {location[0]}"
+        location = _required_location(source_text)
+        if (
+            location and "транспорт" not in category_title.casefold()
+            and len(compact) > 45
+        ):
+            for alias in sorted(location[1], key=len, reverse=True):
+                compact = re.sub(
+                    rf"(?:\s*,?\s*(?:в\s+)?(?:город(?:е)?\s+)?)?"
+                    rf"{re.escape(alias)}\w*",
+                    "",
+                    compact,
+                    flags=re.I,
+                )
+            compact = re.sub(r"\s+", " ", compact).strip(" ,;:–—-")
+            compact = re.sub(r"\s+([,;:])", r"\1", compact)
+            suffix = f", {location[0]}"
+            limit = TITLE_MAX_LENGTH - len(suffix)
+            if len(compact) > limit:
+                compact = compact[:limit].rsplit(" ", 1)[0].rstrip(" ,;:–—-")
+            compact += suffix
     compact = _sanitize_showcase_title(
         compact, source_text, category_title in {
             value[1] for value in REAL_ESTATE_SECTIONS.values()
