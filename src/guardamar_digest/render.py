@@ -5,7 +5,7 @@ import json
 import re
 from collections import defaultdict
 from .db import connect
-from .llm import _required_location
+from .llm import OTHER_LOCATION_ALIASES, _required_location
 
 
 LIMIT = 3600
@@ -69,6 +69,18 @@ def telegram_length(text: str) -> int:
     # Telegram counts supplementary Unicode characters (most emoji) as two
     # UTF-16 code units. Counting this way is safer than Python's len().
     return len(text.encode("utf-16-le")) // 2
+
+
+def _has_outside_city(title: str, source_text: str) -> bool:
+    """Rank another city after Guardamar and location-neutral listings."""
+    if _required_location(source_text):
+        return True
+    normalized_title = title.casefold()
+    return any(
+        alias in normalized_title
+        for _, aliases in OTHER_LOCATION_ALIASES
+        for alias in aliases
+    )
 
 
 def _intent_subsection(category_title: str, source_text: str) -> str | None:
@@ -160,8 +172,11 @@ def render(settings, period: str) -> list[str]:
             key=lambda row: (
                 category_order.get(row["category_code"], len(category_order)),
                 row["category_title"] or "",
-                1 if _required_location(row["source_text"]) else 0,
-                row["short_title"] or "",
+                1 if _has_outside_city(
+                    row["manual_title"] or row["short_title"] or "",
+                    row["source_text"],
+                ) else 0,
+                row["manual_title"] or row["short_title"] or "",
             ),
         )
     groups = defaultdict(list)

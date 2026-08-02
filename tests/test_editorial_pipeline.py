@@ -1003,20 +1003,28 @@ class PipelineTest(unittest.TestCase):
     def test_render_moves_explicit_other_city_to_end_of_each_category(self):
         settings = make_settings(self.db)
         with connect(self.db) as con:
-            outside = add_message(con, 80, "Аликанте. Предлагаю массаж")
+            outside = add_message(
+                con, 80, "Предлагаю массаж\nПринимаю клиентов по записи"
+            )
             local = add_message(con, 81, "Предлагаю массаж в Гуардамаре")
             coverage = add_message(
                 con, 82,
                 "Предлагаю трансфер\nАэропорты Аликанте, Валенсия и Мурсия",
             )
+            local_latin = add_message(
+                con, 83, "Предлагаю остеопатию в Guardamar del Segura"
+            )
+            local_variant = add_message(
+                con, 84, "Предлагаю маникюр в Гвардамаре"
+            )
             con.execute(
                 """UPDATE entries SET eligible=1,category_code='services',
                    category_title='Услуги',category_emoji='🛠',
-                   classification_run_id='run' WHERE message_id IN (?,?,?)""",
-                (outside, local, coverage),
+                   classification_run_id='run' WHERE message_id IN (?,?,?,?,?)""",
+                (outside, local, coverage, local_latin, local_variant),
             )
             con.execute(
-                "UPDATE entries SET short_title='Массаж, Аликанте' WHERE message_id=?",
+                "UPDATE entries SET short_title='Массаж, Санта-Пола' WHERE message_id=?",
                 (outside,),
             )
             con.execute(
@@ -1028,6 +1036,14 @@ class PipelineTest(unittest.TestCase):
                 (coverage,),
             )
             con.execute(
+                "UPDATE entries SET short_title='Остеопатия, Guardamar del Segura' WHERE message_id=?",
+                (local_latin,),
+            )
+            con.execute(
+                "UPDATE entries SET short_title='Маникюр, Гвардамар' WHERE message_id=?",
+                (local_variant,),
+            )
+            con.execute(
                 """INSERT INTO classification_runs
                    (period_key,run_id,input_signature,categories_json,status)
                    VALUES ('2026-07','run','sig',?,'complete')""",
@@ -1037,7 +1053,9 @@ class PipelineTest(unittest.TestCase):
             )
         output = "\n".join(render(settings, "2026-07"))
         self.assertLess(output.index("Массаж "), output.index("Услуги трансфера"))
-        self.assertLess(output.index("Услуги трансфера"), output.index("Массаж, Аликанте"))
+        self.assertLess(output.index("Услуги трансфера"), output.index("Массаж, Санта-Пола"))
+        self.assertLess(output.index("Гвардамар"), output.index("Массаж, Санта-Пола"))
+        self.assertLess(output.index("Guardamar del Segura"), output.index("Массаж, Санта-Пола"))
 
     def test_render_groups_mixed_categories_by_original_intent(self):
         settings = make_settings(self.db)
