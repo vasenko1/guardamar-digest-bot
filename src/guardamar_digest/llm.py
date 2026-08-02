@@ -51,7 +51,7 @@ SANITIZE_CONTACT = re.compile(
     r"https?://\S+|www\.\S+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|@\w+|"
     + PHONE_NUMBER.pattern, re.I,
 )
-TITLE_MAX_LENGTH = 95
+TITLE_MAX_LENGTH = 60
 DANGLING_END = re.compile(
     r"\b(?:в|во|на|для|с|со|из|от|до|по|к|у|и|или|а|но|под|над|при|через)$",
     re.I,
@@ -131,6 +131,43 @@ FOOD_CATEGORY = re.compile(
     r"цвет(?:ы|ов|ок|ка|ки|ами|ах|очн\w*)|букет\w*)\b",
     re.I,
 )
+REAL_ESTATE_SOURCE = re.compile(
+    r"\b(?:квартир\w*|жиль[еёя]|бунгало|студи(?:я|ю|и)|апартамент\w*|"
+    r"(?:сдам|сниму|аренд\w*|продам|прода[её]тся|куплю)\s+дом\b)\b",
+    re.I,
+)
+REAL_ESTATE_SECTIONS = {
+    "rent_offer": ("realestate_rent_offer", "Сдам в аренду"),
+    "rent_seek": ("realestate_rent_seek", "Сниму в аренду"),
+    "sale_offer": ("realestate_sale_offer", "Продам"),
+    "sale_seek": ("realestate_sale_seek", "Куплю"),
+}
+REAL_ESTATE_ACTION = re.compile(
+    r"\b(?:аренд\w*|сдам|сда[её]тся|снять|сниму|ищу|ищем|продам|"
+    r"прода[её]тся|куплю|покупк\w*)\b",
+    re.I,
+)
+CAR_BRAND = re.compile(
+    r"\b(?:audi|bmw|chevrolet|citro[eë]n|fiat|ford|honda|hyundai|kia|"
+    r"mazda|mercedes|mitsubishi|nissan|opel|peugeot|renault|seat|"
+    r"skoda|tesla|toyota|volkswagen|volvo)\b",
+    re.I,
+)
+CAR_TECHNICAL_DETAIL = re.compile(
+    r"\b(?:пробег|км|двигател\w*|бензин|дизел\w*|акпп|мкпп|"
+    r"механик\w*|автомат\w*|л\.с\.|комплектаци\w*)\b",
+    re.I,
+)
+CAR_INLINE_TECHNICAL = re.compile(
+    r"\b(?:гибрид\w*|дизел\w*|бензин\w*|автомат\w*|механик\w*|"
+    r"акпп|мкпп)\b",
+    re.I,
+)
+COMPACT_FLUFF = re.compile(
+    r"\b(?:профессиональн\w*|качественн\w*|комфортн\w*|"
+    r"в\s+отличном\s+состоянии|готов\w*\s+приступить\s+к\s+обязанностям)\b",
+    re.I,
+)
 
 
 def prepare_rows(records) -> list[dict]:
@@ -172,7 +209,9 @@ def _valid_category(category: object) -> bool:
     )
 
 
-def _validate_showcase_title(value: object, source_text: str = "") -> str:
+def _validate_showcase_title(
+    value: object, source_text: str = "", intent_in_category: bool = False
+) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("model response has empty title")
     title = " ".join(value.split())
@@ -208,19 +247,12 @@ def _validate_showcase_title(value: object, source_text: str = "") -> str:
         raise ValueError(
             f"model response omitted the outside location {required_location[0]}"
         )
-    if source_text and SOURCE_SEEK.search(source_text) and not TITLE_SEEK.search(title):
+    if (
+        source_text and not intent_in_category
+        and SOURCE_SEEK.search(source_text) and not TITLE_SEEK.search(title)
+    ):
         raise ValueError("model response changed a request into an offer")
-    bedrooms = re.search(
-        r"\b(\d+|одн(?:а|ой|у)|две|двух|двумя|три|тр[её]х|тремя|"
-        r"четыре|четыр[её]х|четырьмя|пять|пяти|пятью)\s*"
-        r"(?:[^\W\d_]+\s+){0,3}(?:спальн|bedrooms?\b|dormitorios?\b)",
-        source_text,
-        re.I,
-    )
-    bedroom_count = None
-    if bedrooms:
-        raw_count = bedrooms.group(1).casefold()
-        bedroom_count = raw_count if raw_count.isdigit() else NUMBER_WORDS.get(raw_count)
+    bedroom_count = _bedroom_count(source_text)
     if bedroom_count and re.search(
         rf"\b{re.escape(bedroom_count)}\s*[- ]?комнатн", title, re.I
     ) and not re.search(rf"\b{re.escape(bedroom_count)}\s*спальн", title, re.I):
@@ -230,7 +262,9 @@ def _validate_showcase_title(value: object, source_text: str = "") -> str:
     return title
 
 
-def _sanitize_showcase_title(value: object, source_text: str = "") -> str:
+def _sanitize_showcase_title(
+    value: object, source_text: str = "", intent_in_category: bool = False
+) -> str:
     """Remove forbidden data that can be deleted without changing the offer."""
     if not isinstance(value, str):
         raise ValueError("model response has empty title")
@@ -254,12 +288,153 @@ def _sanitize_showcase_title(value: object, source_text: str = "") -> str:
             title = title.rsplit("[", 1)[0].rstrip(" ,;:-")
     while DANGLING_END.search(title):
         title = title.rsplit(" ", 1)[0].rstrip(" ,;:|/\N{EN DASH}\N{EM DASH}-")
-    return _validate_showcase_title(title, source_text)
+    return _validate_showcase_title(title, source_text, intent_in_category)
 
 
 def _validate_category_assignment(source_text: str, category_title: str) -> None:
     if (FOOD.search(source_text) or FLOWERS.search(source_text)) and not FOOD_CATEGORY.search(category_title):
         raise ValueError("food or flowers assigned outside their digest section")
+    mode = _realestate_mode(source_text)
+    if mode and category_title != REAL_ESTATE_SECTIONS[mode][1]:
+        raise ValueError("real estate assigned to the wrong intent subsection")
+
+
+def _realestate_mode(source_text: str) -> str | None:
+    if not REAL_ESTATE_SOURCE.search(source_text):
+        return None
+    if re.search(r"\bкуплю\b", source_text, re.I):
+        return "sale_seek"
+    if re.search(r"\b(?:продам|прода[её]тся|продажа)\b", source_text, re.I):
+        return "sale_offer"
+    if SOURCE_SEEK.search(source_text):
+        return "rent_seek"
+    return "rent_offer"
+
+
+def _validate_compact_title(title: str, source_text: str, category_title: str) -> None:
+    if _realestate_mode(source_text) and REAL_ESTATE_ACTION.search(title):
+        raise ValueError("real estate title repeats its intent subsection")
+    if (
+        CAR_BRAND.search(source_text)
+        and re.search(r"\b(?:19|20)\d{2}\b", source_text)
+        and CAR_TECHNICAL_DETAIL.search(title)
+    ):
+        raise ValueError("vehicle title contains details beyond make, model and year")
+
+
+def _bedroom_count(source_text: str) -> str | None:
+    bedrooms = re.search(
+        r"\b(\d+|одн(?:а|ой|у)|две|двух|двумя|три|тр[её]х|тремя|"
+        r"четыре|четыр[её]х|четырьмя|пять|пяти|пятью)\s*"
+        r"(?:[^\W\d_]+\s+){0,3}(?:спальн|bedrooms?\b|dormitorios?\b)",
+        source_text,
+        re.I,
+    )
+    if not bedrooms:
+        return None
+    raw_count = bedrooms.group(1).casefold()
+    return raw_count if raw_count.isdigit() else NUMBER_WORDS.get(raw_count)
+
+
+def _realestate_object(source_text: str, seek: bool) -> str:
+    forms = (
+        (r"\bбунгало\b", "Бунгало", "Бунгало"),
+        (r"\bстуди(?:я|ю|и)\b", "Студия", "Студию"),
+        (r"\bапартамент\w*\b", "Апартаменты", "Апартаменты"),
+        (r"\bквартир\w*\b", "Квартира", "Квартиру"),
+        (r"\bдом\w*\b", "Дом", "Дом"),
+        (r"\bжиль[еёя]\b", "Жильё", "Жильё"),
+    )
+    for pattern, offer_form, seek_form in forms:
+        if re.search(pattern, source_text, re.I):
+            return seek_form if seek else offer_form
+    return "Жильё"
+
+
+def _realestate_term(source_text: str) -> str | None:
+    numeric = re.search(
+        r"\b(\d{1,2}[./]\d{1,2})\s*(?:по|[-–—])\s*(\d{1,2}[./]\d{1,2})\b",
+        source_text,
+        re.I,
+    )
+    if numeric:
+        return f"{numeric.group(1)}–{numeric.group(2)}"
+    same_month = re.search(
+        r"\b(?:с\s+)?(\d{1,2})\s*(?:по|[-–—])\s*(\d{1,2})\s+"
+        r"(январ[ья]|феврал[ья]|марта|апрел[ья]|ма[йя]|июн[ья]|июл[ья]|"
+        r"августа|сентябр[ья]|октябр[ья]|ноябр[ья]|декабр[ья])\b",
+        source_text,
+        re.I,
+    )
+    if same_month:
+        return f"{same_month.group(1)}–{same_month.group(2)} {same_month.group(3).lower()}"
+    if re.search(r"\b(?:посуточн\w*|на\s+сутки)\b", source_text, re.I):
+        return "посуточно"
+    if re.search(
+        r"\b(?:долгосрочн\w*|длительн\w*|на\s+весь\s+год|на\s+год)\b",
+        source_text,
+        re.I,
+    ):
+        return "длительно"
+    return None
+
+
+def _compact_realestate_title(source_text: str) -> str:
+    mode = _realestate_mode(source_text) or "rent_offer"
+    parts = [_realestate_object(source_text, mode.endswith("seek"))]
+    bedrooms = _bedroom_count(source_text)
+    if bedrooms:
+        number = int(bedrooms)
+        if number % 10 == 1 and number % 100 != 11:
+            noun = "спальня"
+        elif number % 10 in {2, 3, 4} and number % 100 not in {12, 13, 14}:
+            noun = "спальни"
+        else:
+            noun = "спален"
+        parts.append(f"{bedrooms} {noun}")
+    term = _realestate_term(source_text)
+    if term:
+        parts.append(term)
+    location = _required_location(source_text)
+    if location and not any(alias in " ".join(parts).casefold() for alias in location[1]):
+        parts.append(location[0])
+    return ", ".join(parts)
+
+
+def _compact_checkpoint_title(title: str, source_text: str, category_title: str) -> str:
+    if _realestate_mode(source_text):
+        compact = _compact_realestate_title(source_text)
+    else:
+        compact = COMPACT_FLUFF.sub("", title)
+        compact = re.sub(r"\s+", " ", compact).strip(" ,;:–—-")
+        if CAR_BRAND.search(source_text):
+            match = re.search(
+                r"\b(?:19|20)\d{2}\b", compact
+            )
+            if match:
+                compact = compact[:match.end()]
+                compact = re.sub(
+                    r"^(?:автомобиль|продажа|аренда|продам)\s+", "", compact,
+                    flags=re.I,
+                )
+                compact = CAR_INLINE_TECHNICAL.sub("", compact)
+                compact = re.sub(r"\s+", " ", compact).strip(" ,;:-")
+                compact = re.sub(
+                    r"\s*,?\s*((?:19|20)\d{2})$", r", \1", compact
+                )
+                location = _required_location(source_text)
+                if location and not any(
+                    alias in compact.casefold() for alias in location[1]
+                ):
+                    compact = f"{compact}, {location[0]}"
+    compact = _sanitize_showcase_title(
+        compact, source_text, category_title in {
+            value[1] for value in REAL_ESTATE_SECTIONS.values()
+        }
+    )
+    _validate_category_assignment(source_text, category_title)
+    _validate_compact_title(compact, source_text, category_title)
+    return compact
 
 
 def _ensure_editorial_categories(categories: list[dict], rows: list[dict]) -> tuple[list[dict], bool]:
@@ -283,6 +458,40 @@ def _ensure_editorial_categories(categories: list[dict], rows: list[dict]) -> tu
     else:
         title, emoji = "Цветы и букеты", "🌸"
     return [*categories, {"code": code, "title": title, "emoji": emoji}], True
+
+
+def _ensure_realestate_categories(categories: list[dict], rows: list[dict]) -> tuple[list[dict], bool]:
+    modes = {mode for row in rows if (mode := _realestate_mode(row["text"]))}
+    if not modes:
+        return categories, False
+    desired_codes = {REAL_ESTATE_SECTIONS[mode][0] for mode in modes}
+    existing_codes = {category["code"] for category in categories}
+    if desired_codes.issubset(existing_codes) and not any(
+        re.search(r"недвиж|жиль", category["title"], re.I)
+        and category["code"] not in desired_codes
+        for category in categories
+    ):
+        return categories, False
+    section_codes = {value[0] for value in REAL_ESTATE_SECTIONS.values()}
+    removed_indexes = [
+        index for index, category in enumerate(categories)
+        if re.search(r"недвиж|жиль", category["title"], re.I)
+        or category["code"] in section_codes
+    ]
+    insertion_index = min(removed_indexes, default=0)
+    filtered = [
+        category for category in categories
+        if not re.search(r"недвиж|жиль", category["title"], re.I)
+        and category["code"] not in section_codes
+    ]
+    sections = []
+    ordered_modes = ("rent_offer", "rent_seek", "sale_offer", "sale_seek")
+    for mode in ordered_modes:
+        if mode in modes:
+            code, title = REAL_ESTATE_SECTIONS[mode]
+            sections.append({"code": code, "title": title, "emoji": ""})
+    filtered[insertion_index:insertion_index] = sections
+    return filtered, True
 
 
 def _post(url: str, headers: dict[str, str], body: dict) -> dict:
@@ -334,7 +543,7 @@ def prompt(rows: list[dict], categories: list[dict] | None = None) -> str:
         return """Верни ТОЛЬКО JSON: {\"entries\":[{\"id\":1,\"include\":true,\"category\":\"разрешённый_code\",\"title\":\"...\",\"confidence\":\"high|low\"}]}.
 Для КАЖДОГО переданного id верни ровно один объект. Используй только разрешённые категории. Не пиши цену, контакты, URL; другой город укажи. Если это не самостоятельное объявление, include=false, но title всё равно заполни кратко.
 Витринная строка ВСЕГДА на русском, даже если исходник на украинском, испанском или английском. Имена, бренды, города и даты сохраняй.
-Title — одна информативная строка, обычно 40–75 и максимум 95 символов.
+Title — компактная витринная строка, обычно 18–45 и максимум 60 символов.
 Не повторяй в title название категории, не используй капслок и рекламные эпитеты.
 Сохраняй направление объявления: «ищу/куплю/требуется» и «сниму жильё/авто» нельзя превращать в предложение. Но «сниму видеоролик» — это предложение видеосъёмки.
 Не добавляй скидки, акции, подарки и бесплатный пробный урок. Не обрывай строку на предлоге или союзе.
@@ -342,6 +551,9 @@ Title — одна информативная строка, обычно 40–75
 Пиши естественно: вместо «поиск услуг по аренде автомобиля» — «ищу автомобиль в аренду».
 Не заменяй число спален числом комнат.
 Не переноси в title внутреннюю цель поездки «ДП Документ». Если другой город указан в начале объявления, обязательно сохрани его.
+Для разделов «Сдам в аренду» и «Сниму в аренду» пиши ТОЛЬКО: объект, число спален/комнат, срок. Не повторяй «аренда», «сдам», «сниму», «ищу». Примеры: «Квартира, длительно»; «Квартира, 2 спальни, 2–11 августа».
+Для объявления о конкретном автомобиле пиши ТОЛЬКО марку, модель и год: «Hyundai i20, 2014». Не пиши пробег, двигатель, топливо, коробку и комплектацию.
+В остальных разделах оставляй предмет и только один главный факт: город, дату, маршрут или аудиторию.
 Еду, выпечку, десерты и цветы помещай только в соответствующий раздел еды/цветов.
 Включай только конкретное предложение или запрос товара, услуги, жилья, работы, транспорта, обучения либо мероприятия. Погода, новости, отзывы, обсуждения и общие вопросы без конкретного запроса — include=false.
 Разрешённые категории: """ + json.dumps(categories, ensure_ascii=False) + "\nДанные:\n" + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
@@ -466,7 +678,11 @@ def classify(settings: Settings, period: str) -> str:
       fixed_categories,
       [{"text": source_texts[row["id"]]} for row in rows],
     )
-    if categories_added:
+    fixed_categories, realestate_added = _ensure_realestate_categories(
+      fixed_categories,
+      [{"text": source_texts[row["id"]]} for row in rows],
+    )
+    if categories_added or realestate_added:
       cached_plan_valid = False
     if not run or run["input_signature"]!=signature or not cached_plan_valid:
       run_id=uuid.uuid4().hex
@@ -481,6 +697,29 @@ def classify(settings: Settings, period: str) -> str:
                FROM entries WHERE period_key=? AND message_id=?""",
             (period,row["id"]),
           ).fetchone()
+          source_text = source_texts[row["id"]]
+          mode = _realestate_mode(source_text)
+          if existing and existing["eligible"] and existing["short_title"] and mode:
+            target_code, _ = REAL_ESTATE_SECTIONS[mode]
+            category = fixed_map.get(target_code)
+            if category:
+              try:
+                compact = _compact_checkpoint_title(
+                  existing["short_title"], source_text, category["title"]
+                )
+              except ValueError:
+                pass
+              else:
+                con.execute(
+                  """UPDATE entries SET category_code=?,category_title=?,
+                     category_emoji=?,short_title=?,classification_run_id=?,
+                     classification_fingerprint=?,classification_version=?
+                     WHERE period_key=? AND message_id=?""",
+                  (target_code,category["title"],category.get("emoji"),compact,
+                   run_id,item_fingerprints[row["id"]],CLASSIFIER_VERSION,
+                   period,row["id"]),
+                )
+                continue
           reusable = bool(
             existing and existing["category_code"] in fixed_map
             and existing["short_title"]
@@ -496,23 +735,35 @@ def classify(settings: Settings, period: str) -> str:
               )
             )
           )
+          compact = existing["short_title"] if existing else None
           if reusable:
             try:
-              source_text = source_texts[row["id"]]
-              _validate_showcase_title(existing["short_title"], source_text)
+              if existing["eligible"]:
+                compact = _compact_checkpoint_title(
+                  existing["short_title"], source_text,
+                  fixed_map[existing["category_code"]]["title"],
+                )
+              else:
+                compact = _sanitize_showcase_title(
+                  existing["short_title"], source_text
+                )
               if existing["eligible"]:
                 _validate_category_assignment(
                   source_text, fixed_map[existing["category_code"]]["title"]
+                )
+                _validate_compact_title(
+                  existing["short_title"], source_text,
+                  fixed_map[existing["category_code"]]["title"],
                 )
             except ValueError:
               reusable = False
           if reusable:
             category = fixed_map[existing["category_code"]]
             con.execute(
-              """UPDATE entries SET category_title=?,category_emoji=?,
+              """UPDATE entries SET category_title=?,category_emoji=?,short_title=?,
                  classification_run_id=?,classification_fingerprint=?,
                  classification_version=? WHERE period_key=? AND message_id=?""",
-              (category.get("title"),category.get("emoji"),run_id,
+              (category.get("title"),category.get("emoji"),compact,run_id,
                item_fingerprints[row["id"]],CLASSIFIER_VERSION,period,row["id"]),
             )
           else:
@@ -551,9 +802,25 @@ def classify(settings: Settings, period: str) -> str:
           if row is None or category is None:
             raise ValueError("checkpoint is outside the current input plan")
           source_text = source_texts[checkpoint["message_id"]]
-          _validate_showcase_title(checkpoint["short_title"], source_text)
+          if checkpoint["eligible"]:
+            compact = _compact_checkpoint_title(
+              checkpoint["short_title"], source_text, category["title"]
+            )
+          else:
+            compact = _sanitize_showcase_title(
+              checkpoint["short_title"], source_text
+            )
+          if compact != checkpoint["short_title"]:
+            con.execute(
+              """UPDATE entries SET short_title=?
+                 WHERE period_key=? AND message_id=?""",
+              (compact, period, checkpoint["message_id"]),
+            )
           if checkpoint["eligible"]:
             _validate_category_assignment(source_text, category["title"])
+            _validate_compact_title(
+              checkpoint["short_title"], source_text, category["title"]
+            )
         except ValueError:
           con.execute(
             """UPDATE entries SET category_code=NULL,category_title=NULL,
@@ -605,11 +872,17 @@ def classify(settings: Settings, period: str) -> str:
             with connect(settings.db_path) as con:
               entry=returned[0]
               source_text = source_texts[entry["id"]]
-              title = _sanitize_showcase_title(entry.get("title"), source_text)
               if not isinstance(entry.get("include"),bool): raise ValueError("model response has non-boolean include")
               category=fixed_map[entry["category"]]
+              title = _sanitize_showcase_title(
+                entry.get("title"), source_text,
+                category["title"] in {
+                  value[1] for value in REAL_ESTATE_SECTIONS.values()
+                },
+              )
               if entry["include"]:
                 _validate_category_assignment(source_text, category["title"])
+                _validate_compact_title(title, source_text, category["title"])
               con.execute("UPDATE entries SET eligible=?,category_code=?,category_title=?,category_emoji=?,short_title=?,confidence=?,provider=?,classification_run_id=?,classification_fingerprint=?,classification_version=? WHERE message_id=? AND period_key=?",(int(entry["include"]),entry["category"],category.get("title"),category.get("emoji"),title,entry.get("confidence"),provider,run_id,item_fingerprints[entry["id"]],CLASSIFIER_VERSION,entry["id"],period))
             provider_used.append(provider); break
         except HTTPError as exc:

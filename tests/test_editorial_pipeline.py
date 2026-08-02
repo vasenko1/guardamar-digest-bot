@@ -14,7 +14,10 @@ from guardamar_digest.dedupe import dedupe, semantic_dedupe
 from guardamar_digest.importer import import_export
 from guardamar_digest.llm import (
     _json,
+    _compact_checkpoint_title,
+    _compact_realestate_title,
     _ensure_editorial_categories,
+    _ensure_realestate_categories,
     _sanitize_showcase_title,
     _validate_category_assignment,
     _validate_showcase_title,
@@ -630,6 +633,56 @@ class PipelineTest(unittest.TestCase):
         )
         self.assertEqual(both[0]["title"], "Еда и цветы")
 
+    def test_compact_category_specific_titles(self):
+        self.assertEqual(
+            _compact_checkpoint_title(
+                "Аренда квартиры с двумя спальнями для семьи на длительный срок",
+                "Сдается квартира с 2 спальнями на длительный срок",
+                "Сдам в аренду",
+            ),
+            "Квартира, 2 спальни, длительно",
+        )
+        self.assertEqual(
+            _compact_checkpoint_title(
+                "Автомобиль Hyundai i20, 2014, бензин, МКПП, пробег 127 тыс. км",
+                "Продам Hyundai i20, 2014 г., бензин, МКПП",
+                "Транспорт и автоуслуги",
+            ),
+            "Hyundai i20, 2014",
+        )
+        self.assertEqual(
+            _compact_checkpoint_title(
+                "Mazda 6, 2005, бензин, механика, Аликанте",
+                "Продам Mazda 6, 2005 год, 1.8 бензин, механика, Аликанте",
+                "Транспорт и автоуслуги",
+            ),
+            "Mazda 6, 2005, Аликанте",
+        )
+        self.assertEqual(
+            _compact_checkpoint_title(
+                "Аренда Toyota Corolla гибрид 2022 года в Гуардамаре",
+                "Сдаем Toyota Corolla гибрид 2022 года в Guardamar del Segura",
+                "Транспорт и автоуслуги",
+            ),
+            "Toyota Corolla, 2022",
+        )
+        self.assertEqual(
+            _compact_realestate_title("Сниму студию с 1 спальней"),
+            "Студию, 1 спальня",
+        )
+        categories, changed = _ensure_realestate_categories(
+            [{"code": "housing", "title": "Недвижимость", "emoji": "🏠"}],
+            [
+                {"text": "Сдается квартира на год"},
+                {"text": "Ищем квартиру на длительный срок"},
+            ],
+        )
+        self.assertTrue(changed)
+        self.assertEqual(
+            [category["title"] for category in categories],
+            ["Сдам в аренду", "Сниму в аренду"],
+        )
+
     def test_model_title_is_safely_cleaned_before_checkpoint(self):
         self.assertEqual(
             _sanitize_showcase_title(
@@ -755,20 +808,18 @@ class PipelineTest(unittest.TestCase):
                    WHERE message_id=?""",
                 (message_id,),
             )
-        response = {"candidates": [{"content": {"parts": [{"text":
-            '{"entries":[{"id":1,"include":true,"category":"realestate",'
-            '"title":"Семья ищет квартиру","confidence":"high"}]}'
-        }]}}]}
-        with patch("guardamar_digest.llm._post", return_value=response) as post:
-            self.assertEqual(classify(settings, "2026-07"), "gemini")
-        self.assertEqual(post.call_count, 1)
+        with patch("guardamar_digest.llm._post") as post:
+            self.assertEqual(classify(settings, "2026-07"), "")
+        post.assert_not_called()
         with connect(self.db) as con:
             row = con.execute(
-                "SELECT short_title,classification_run_id FROM entries WHERE message_id=?",
+                """SELECT short_title,category_code,classification_run_id
+                   FROM entries WHERE message_id=?""",
                 (message_id,),
             ).fetchone()
-        self.assertEqual(row["short_title"], "Семья ищет квартиру")
-        self.assertEqual(row["classification_run_id"], "run")
+        self.assertEqual(row["short_title"], "Квартиру")
+        self.assertEqual(row["category_code"], "realestate_rent_seek")
+        self.assertNotEqual(row["classification_run_id"], "run")
 
     def test_classification_adds_food_section_and_reuses_other_checkpoint(self):
         base = make_settings(self.db)
@@ -908,6 +959,39 @@ class PipelineTest(unittest.TestCase):
             '<a href="https://t.me/MarketGuardamar">обЪявления Гуардамар</a>',
             output,
         )
+
+    def test_render_nests_realestate_intent_subsections(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            offer = add_message(con, 70, "Сдается квартира на год")
+            seek = add_message(con, 71, "Ищем квартиру на год")
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='realestate_rent_offer',
+                   category_title='Сдам в аренду',category_emoji='',
+                   short_title='Квартира, длительно',classification_run_id='run'
+                   WHERE message_id=?""",
+                (offer,),
+            )
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='realestate_rent_seek',
+                   category_title='Сниму в аренду',category_emoji='',
+                   short_title='Квартиру, длительно',classification_run_id='run'
+                   WHERE message_id=?""",
+                (seek,),
+            )
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run','sig',?,'complete')""",
+                (json.dumps([
+                    {"code": "realestate_rent_offer", "title": "Сдам в аренду", "emoji": ""},
+                    {"code": "realestate_rent_seek", "title": "Сниму в аренду", "emoji": ""},
+                ], ensure_ascii=False),),
+            )
+        output = "\n".join(render(settings, "2026-07"))
+        self.assertEqual(output.count("<b>Недвижимость</b>"), 1)
+        self.assertIn("<b>Сдам в аренду</b>\n• Квартира, длительно", output)
+        self.assertIn("<b>Сниму в аренду</b>\n• Квартиру, длительно", output)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,9 @@ from .db import connect
 
 
 LIMIT = 3600
+REAL_ESTATE_SUBSECTIONS = {
+    "Сдам в аренду", "Сниму в аренду", "Продам", "Куплю",
+}
 MONTHS_RU = (
     "", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
     "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
@@ -59,7 +62,37 @@ def render(settings, period: str) -> list[str]:
         cat = (r["category_emoji"] or "📦", r["manual_category"] or r["category_title"] or "Другое")
         groups[cat].append(f'• {html.escape(title)}\u202f<a href="{html.escape(r["source_url"], quote=True)}">↗</a>')
     blocks=[]
+    realestate_groups = [
+        (title, entries) for (_, title), entries in groups.items()
+        if title in REAL_ESTATE_SUBSECTIONS
+    ]
+    realestate_emitted = False
     for (emoji, title), entries in groups.items():
+        if title in REAL_ESTATE_SUBSECTIONS:
+            if realestate_emitted:
+                continue
+            realestate_emitted = True
+            parent = "🏠 <b>Недвижимость</b>\n"
+            current = parent
+            for subsection, subsection_entries in realestate_groups:
+                subheading = f"<b>{html.escape(subsection)}</b>\n"
+                first_entry = True
+                for entry in subsection_entries:
+                    prefix = ""
+                    if current != parent:
+                        prefix += "\n"
+                    if first_entry:
+                        prefix += subheading
+                    candidate = current + prefix + entry
+                    if current != parent and telegram_length(candidate) > LIMIT:
+                        blocks.append(current.rstrip())
+                        current = parent + subheading + entry
+                    else:
+                        current = candidate
+                    first_entry = False
+            if current != parent:
+                blocks.append(current.rstrip())
+            continue
         heading=f"{html.escape(emoji)} <b>{html.escape(title)}</b>\n"
         chunk=[]
         for entry in entries:

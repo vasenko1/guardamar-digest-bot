@@ -11,8 +11,10 @@ from .prefilter import VERSION as PREFILTER_VERSION, _period_cutoff
 from .render import telegram_length
 from .llm import (
     PHONE_NUMBER,
+    REAL_ESTATE_SECTIONS,
     TITLE_MAX_LENGTH,
     _validate_category_assignment,
+    _validate_compact_title,
     _validate_showcase_title,
     classification_signature,
     prepare_rows,
@@ -223,11 +225,19 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
         if UKRAINIAN_ONLY.search(title):
             errors.append(f"message {external_id}: showcase title is not normalized to Russian")
         try:
-            _validate_showcase_title(title, row["source_text"])
+            _validate_showcase_title(
+                title,
+                row["source_text"],
+                category in {value[1] for value in REAL_ESTATE_SECTIONS.values()},
+            )
         except ValueError as exc:
             errors.append(f"message {external_id}: {exc}")
         try:
             _validate_category_assignment(row["source_text"], category)
+        except ValueError as exc:
+            errors.append(f"message {external_id}: {exc}")
+        try:
+            _validate_compact_title(title, row["source_text"], category)
         except ValueError as exc:
             errors.append(f"message {external_id}: {exc}")
         if row["sender_id"] in settings.excluded_sender_ids:
