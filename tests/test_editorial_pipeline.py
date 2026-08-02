@@ -1039,6 +1039,115 @@ class PipelineTest(unittest.TestCase):
         self.assertLess(output.index("Массаж "), output.index("Услуги трансфера"))
         self.assertLess(output.index("Услуги трансфера"), output.index("Массаж, Аликанте"))
 
+    def test_render_groups_mixed_categories_by_original_intent(self):
+        settings = make_settings(self.db)
+        samples = (
+            (90, "Продам стул", "goods", "Товары", "Стул"),
+            (91, "Ищу детское автокресло", "goods", "Товары", "Автокресло"),
+            (92, "Отдам духовку бесплатно", "goods", "Товары", "Духовка"),
+            (93, "Продам Opel Astra 2016", "transport", "Транспорт", "Opel Astra, 2016"),
+            (94, "Сдаем Toyota Corolla в аренду", "transport", "Транспорт", "Toyota Corolla"),
+            (95, "Ищу автомобиль в аренду", "transport", "Транспорт", "Автомобиль"),
+            (96, "Предлагаю трансфер в аэропорт", "transport", "Транспорт", "Трансфер"),
+            (97, "Вакансия помощника на кухню", "jobs", "Работа", "Помощник на кухню"),
+            (98, "Ищу работу поваром", "jobs", "Работа", "Повар"),
+            (99, "Предлагаю услуги маникюра", "beauty", "Красота", "Маникюр"),
+            (100, "Ищу мастера маникюра", "beauty", "Красота", "Мастер маникюра"),
+        )
+        with connect(self.db) as con:
+            for external_id, source, code, title, short_title in samples:
+                message_id = add_message(con, external_id, source, f"author-{external_id}")
+                con.execute(
+                    """UPDATE entries SET eligible=1,category_code=?,
+                       category_title=?,category_emoji='📦',short_title=?,
+                       classification_run_id='run' WHERE message_id=?""",
+                    (code, title, short_title, message_id),
+                )
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run','sig',?,'complete')""",
+                (json.dumps([
+                    {"code": "goods", "title": "Товары", "emoji": "📦"},
+                    {"code": "transport", "title": "Транспорт", "emoji": "🚗"},
+                    {"code": "jobs", "title": "Работа", "emoji": "💼"},
+                    {"code": "beauty", "title": "Красота", "emoji": "💅"},
+                ], ensure_ascii=False),),
+            )
+        output = "\n".join(render(settings, "2026-07"))
+        self.assertIn("<b>Продажа</b>\n• Стул", output)
+        self.assertIn("<b>Куплю</b>\n• Автокресло", output)
+        self.assertIn("<b>Отдам</b>\n• Духовка", output)
+        self.assertIn("<b>Сдам в аренду</b>\n• Toyota Corolla", output)
+        self.assertIn("<b>Сниму в аренду</b>\n• Автомобиль", output)
+        self.assertIn("<b>Поездки и трансфер</b>\n• Трансфер", output)
+        self.assertIn("<b>Требуется</b>\n• Помощник на кухню", output)
+        self.assertIn("<b>Ищу работу</b>\n• Повар", output)
+        self.assertIn("<b>Предлагаю услуги</b>\n• Маникюр", output)
+        self.assertIn("<b>Ищу специалиста</b>\n• Мастер маникюра", output)
+
+    def test_intent_groups_do_not_confuse_free_delivery_with_giveaway(self):
+        from guardamar_digest.render import _intent_subsection
+
+        self.assertEqual(
+            _intent_subsection("Товары", "Продам стул, доставка бесплатно"),
+            "Продажа",
+        )
+        self.assertEqual(
+            _intent_subsection("Товары", "Отдам духовку бесплатно"),
+            "Отдам",
+        )
+        self.assertEqual(
+            _intent_subsection("Товары", "Продам шкаф, требуется самовывоз"),
+            "Продажа",
+        )
+        self.assertEqual(
+            _intent_subsection(
+                "Товары", "Якщо хтось продає двоярусне ліжко, пишіть"
+            ),
+            "Куплю",
+        )
+        self.assertEqual(
+            _intent_subsection("Товары", "Сдам детскую коляску в аренду"),
+            "Сдам в аренду",
+        )
+        self.assertEqual(
+            _intent_subsection("Товары", "Ищу проектор в аренду"),
+            "Сниму в аренду",
+        )
+        self.assertEqual(
+            _intent_subsection("Транспорт", "Opel Astra 2016, дизель, АКПП"),
+            "Продажа",
+        )
+        self.assertEqual(
+            _intent_subsection("Транспорт", "Кто занимается арендой машин?"),
+            "Сниму в аренду",
+        )
+        self.assertEqual(
+            _intent_subsection("Транспорт", "Здам автомобіль в оренду"),
+            "Сдам в аренду",
+        )
+        self.assertEqual(
+            _intent_subsection(
+                "Транспорт", "Сдам Toyota Corolla в аренду, требуется залог"
+            ),
+            "Сдам в аренду",
+        )
+        self.assertEqual(
+            _intent_subsection(
+                "Бытовые услуги", "Сниму для вас видеоролик и сделаю монтаж"
+            ),
+            "Предлагаю услуги",
+        )
+        self.assertEqual(
+            _intent_subsection("Работа", "Шукаю роботу кухарем"),
+            "Ищу работу",
+        )
+        self.assertEqual(
+            _intent_subsection("Работа", "Потрібен працівник на кухню"),
+            "Требуется",
+        )
+
     def test_render_nests_realestate_intent_subsections(self):
         settings = make_settings(self.db)
         with connect(self.db) as con:
