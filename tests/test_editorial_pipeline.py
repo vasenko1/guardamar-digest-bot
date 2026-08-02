@@ -1054,8 +1054,22 @@ class PipelineTest(unittest.TestCase):
         output = "\n".join(render(settings, "2026-07"))
         self.assertLess(output.index("Массаж "), output.index("Услуги трансфера"))
         self.assertLess(output.index("Услуги трансфера"), output.index("Массаж, Санта-Пола"))
-        self.assertLess(output.index("Гвардамар"), output.index("Массаж, Санта-Пола"))
-        self.assertLess(output.index("Guardamar del Segura"), output.index("Массаж, Санта-Пола"))
+        self.assertNotIn("Гвардамар", output)
+        self.assertNotIn("Guardamar del Segura", output)
+        self.assertIn("• Маникюр ", output)
+        self.assertIn("• Остеопатия ", output)
+
+    def test_display_title_removes_local_city_but_keeps_other_city(self):
+        from guardamar_digest.render import _display_title
+
+        self.assertEqual(_display_title("Маникюр, Гуардамар"), "Маникюр")
+        self.assertEqual(_display_title("Маникюр в Гвардамаре"), "Маникюр")
+        self.assertEqual(
+            _display_title("Маникюр, Guardamar del Segura"), "Маникюр"
+        )
+        self.assertEqual(
+            _display_title("Косметолог, Санта-Пола"), "Косметолог, Санта-Пола"
+        )
 
     def test_render_groups_mixed_categories_by_original_intent(self):
         settings = make_settings(self.db)

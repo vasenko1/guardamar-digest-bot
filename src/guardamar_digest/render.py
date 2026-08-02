@@ -60,6 +60,11 @@ VEHICLE = re.compile(
     re.I,
 )
 MODEL_YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
+LOCAL_CITY = re.compile(
+    r"(?:\s*,?\s*(?:в\s+|г\.?\s*)?)"
+    r"(?:guardamar(?:\s+del\s+segura)?|г(?:у|в)ардамар\w*)",
+    re.I,
+)
 MONTHS_RU = (
     "", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
     "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
@@ -81,6 +86,14 @@ def _has_outside_city(title: str, source_text: str) -> bool:
         for _, aliases in OTHER_LOCATION_ALIASES
         for alias in aliases
     )
+
+
+def _display_title(title: str) -> str:
+    """Remove the digest's own city from a line while preserving other cities."""
+    compact = LOCAL_CITY.sub("", title)
+    compact = re.sub(r"\s+", " ", compact)
+    compact = re.sub(r"\s+([,;:])", r"\1", compact)
+    return compact.strip(" ,;:–—-") or title
 
 
 def _intent_subsection(category_title: str, source_text: str) -> str | None:
@@ -181,7 +194,9 @@ def render(settings, period: str) -> list[str]:
         )
     groups = defaultdict(list)
     for r in rows:
-        title = r["manual_title"] or r["short_title"] or "Объявление"
+        title = _display_title(
+            r["manual_title"] or r["short_title"] or "Объявление"
+        )
         cat = (r["category_emoji"] or "📦", r["manual_category"] or r["category_title"] or "Другое")
         line = f'• {html.escape(title)}\u202f<a href="{html.escape(r["source_url"], quote=True)}">↗</a>'
         groups[cat].append((line, r["source_text"]))
