@@ -76,7 +76,7 @@ NUMBER_WORDS = {
 }
 OPERATIONAL_MARKER = re.compile(r"\(\s*дп\s+документ\s*\)", re.I)
 OTHER_LOCATION_ALIASES = (
-    ("Торревьеха", ("торревьех", "торривьех", "torrevieja")),
+    ("Торревьеха", ("торревьех", "торривьех", "торрейвех", "torrevieja")),
     ("Аликанте", ("аликанте", "alicante")),
     ("Валенсия", ("валенси", "valencia")),
     ("Бенидорм", ("бенидорм", "benidorm")),
@@ -365,6 +365,14 @@ def _realestate_mode(source_text: str) -> str | None:
         return "sale_seek"
     if REAL_ESTATE_SALE.search(source_text):
         return "sale_offer"
+    if re.search(
+        r"\b(?:в\s+)?активн\w*\s+поиск\w*\s+"
+        r"(?:квартир\w*|жиль[еёя]|житл\w*|бунгало|студи\w*|"
+        r"апартамент\w*|дом\w*)\b",
+        source_text,
+        re.I,
+    ):
+        return "rent_seek"
     # The property must be the direct object of the request. Merely mentioning
     # a flat in "ищу мастера для ремонта квартиры" is not a housing search.
     if re.search(

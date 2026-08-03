@@ -216,6 +216,10 @@ class PipelineTest(unittest.TestCase):
             _realestate_mode("Квартира у моря свободна с 2 по 11 августа"),
             "rent_offer",
         )
+        self.assertEqual(
+            _realestate_mode("Я сейчас в активном поиске квартиры для семьи"),
+            "rent_seek",
+        )
 
     def test_editorial_normalization_repairs_false_realestate_and_metadata(self):
         settings = make_settings(self.db)
@@ -274,9 +278,9 @@ class PipelineTest(unittest.TestCase):
                 "Квартира у моря свободна с 2 по 11 августа. Две спальни",
             )
             con.execute(
-                """UPDATE entries SET category_code='realestate_rent_seek',
-                   category_title='Сниму в аренду',category_emoji='',
-                   short_title='Квартиру',classification_run_id='run'
+                """UPDATE entries SET category_code='transport',
+                   category_title='Транспорт и автоуслуги',category_emoji='🚗',
+                   short_title='Автомобили',classification_run_id='run'
                    WHERE message_id IN (?,?)""",
                 (first, second),
             )
@@ -285,6 +289,7 @@ class PipelineTest(unittest.TestCase):
                    (period_key,run_id,input_signature,categories_json,status)
                    VALUES ('2026-07','run','sig',?,'complete')""",
                 (json.dumps([
+                    {"code": "transport", "title": "Транспорт и автоуслуги", "emoji": "🚗"},
                     {"code": "realestate_rent_offer", "title": "Сдам в аренду", "emoji": ""},
                     {"code": "realestate_rent_seek", "title": "Сниму в аренду", "emoji": ""},
                 ], ensure_ascii=False),),
@@ -322,6 +327,14 @@ class PipelineTest(unittest.TestCase):
              "Доставка букетов Гуардамар-дель-Сегура, Торревьеха",
              "Доставка букетов и-дель-Сегура, Торревьеха",
              "Доставка букетов, Торревьеха"),
+            ("rent_seek", "Сниму в аренду",
+             "Сниму квартиру в Торревьехе",
+             "Квартира, 1–2 спальни, Торрейвехе",
+             "Квартира, 1–2 спальни, Торревьеха"),
+            ("rent_offer", "Транспорт и автоуслуги",
+             "Сдаем Toyota Corolla 2022. Коробка автомат. Кондиционер.",
+             "Toyota Corolla, 2022",
+             "Toyota Corolla, 2022"),
         )
         for intent, category, source, existing, expected in cases:
             actual = normalize_title(intent, category, source, existing)
@@ -1486,6 +1499,18 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(
             _intent_subsection("Работа", "Потрібен працівник на кухню"),
             "Требуется",
+        )
+        self.assertEqual(
+            _intent_subsection("Работа и вакансии", "Ищу няню для двоих детей"),
+            "Требуется",
+        )
+        self.assertEqual(
+            normalize_title(
+                "job_offer", "Работа и вакансии",
+                "Ищу няню для двоих детей 1 и 5 лет в Ла-Марине",
+                "Ищу няню для двоих детей 1 и 5 лет, Ла-Марина",
+            ),
+            "Няня для детей 1 и 5 лет, Ла-Марина",
         )
 
     def test_render_nests_realestate_intent_subsections(self):

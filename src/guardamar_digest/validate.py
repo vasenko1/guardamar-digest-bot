@@ -177,7 +177,7 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
                WHERE duplicate.period_key=? AND duplicate.excluded_reason='duplicate'
                  AND (
                    keeper.message_id IS NULL OR keeper.period_key<>duplicate.period_key
-                   OR keeper.eligible<>1 OR keeper.excluded_reason IS NOT NULL
+                   OR keeper.excluded_reason IS NOT NULL
                  )""",
             (period,),
         ).fetchone()[0]

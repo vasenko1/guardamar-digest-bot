@@ -14,7 +14,7 @@ from .llm import (
 )
 
 
-VERSION = "2026-08-03.3"
+VERSION = "2026-08-03.4"
 VALID_INTENTS = {
     "sale_offer", "purchase_seek", "giveaway", "rent_offer", "rent_seek",
     "service_offer", "service_seek", "job_offer", "job_seek",
@@ -66,7 +66,8 @@ JOB_SEEK = re.compile(
 JOB_OFFER = re.compile(
     r"\b(?:ваканси\w*|требу(?:ется|ются)|в\s+поисках\s+сотрудник\w*|"
     r"ищем\s+(?:ответственн\w+\s+)?(?:специалист|сотрудник|работник|мастер)\w*|"
-    r"потріб\w*\s+(?:працівник|робітник|майстер)|работа\s*[!:.\n])",
+    r"потріб\w*\s+(?:працівник|робітник|майстер)|"
+    r"ищу\s+нян\w*|требу(?:ется|ются)\s+нян\w*|работа\s*[!:.\n])",
     re.I,
 )
 TRIP = re.compile(
@@ -213,9 +214,15 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
             title = "Помощник на кухню"
         elif re.search(r"сотрудник\w*\s+на\s+кухн", lowered):
             title = "Сотрудник на кухню"
+        elif re.search(r"\bнян\w*\b", lowered) and intent == "job_offer":
+            title = "Няня для детей 1 и 5 лет"
         elif intent == "job_seek":
             title = "Полная или частичная занятость"
-    if any(word in category.casefold() for word in ("услуг", "красот", "здоров")):
+    is_transport = "транспорт" in category.casefold() or "авто" in category.casefold()
+    if (
+        not is_transport
+        and any(word in category.casefold() for word in ("услуг", "красот", "здоров"))
+    ):
         title = service_title(source, title)
         if re.search(r"\bтрансфер\w*", lowered):
             title = "Трансфер"
@@ -261,6 +268,11 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
         if not re.search(r"\b(?:19|20)\d{2}\b", source):
             title = "Автомобили"
     title = LOCAL_CITY_IN_TITLE.sub("", title)
+    for display, aliases in OTHER_LOCATION_ALIASES:
+        for alias in sorted(aliases, key=len, reverse=True):
+            title = re.sub(
+                rf"\b{re.escape(alias)}\w*\b", display, title, flags=re.I
+            )
     title = re.sub(r"\s+", " ", title)
     title = re.sub(r"\s+([,;:])", r"\1", title)
     title = title.strip(" ,;:–—-")
@@ -347,7 +359,6 @@ def normalize_period(settings, period: str) -> dict[str, int]:
             realestate_mode = _realestate_mode(row["source_text"])
             if (
                 row["manual_category"] is None
-                and category_title in {value[1] for value in REAL_ESTATE_SECTIONS.values()}
                 and realestate_mode
                 and category_title != REAL_ESTATE_SECTIONS[realestate_mode][1]
             ):
