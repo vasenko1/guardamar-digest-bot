@@ -216,6 +216,42 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(stage["status"], "complete")
         self.assertEqual(normalize_period(settings, "2026-07")["changed"], 0)
 
+    def test_editorial_normalization_repairs_realestate_intent_subsection(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            first = add_message(
+                con, 6450,
+                "Сдается квартира на короткий срок июль, август или на весь год. 3 спальни",
+            )
+            second = add_message(
+                con, 6537,
+                "Квартира у моря свободна с 2 по 11 августа. Две спальни",
+            )
+            con.execute(
+                """UPDATE entries SET category_code='realestate_rent_seek',
+                   category_title='Сниму в аренду',category_emoji='',
+                   short_title='Квартиру',classification_run_id='run'
+                   WHERE message_id IN (?,?)""",
+                (first, second),
+            )
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run','sig',?,'complete')""",
+                (json.dumps([
+                    {"code": "realestate_rent_offer", "title": "Сдам в аренду", "emoji": ""},
+                    {"code": "realestate_rent_seek", "title": "Сниму в аренду", "emoji": ""},
+                ], ensure_ascii=False),),
+            )
+        self.assertEqual(normalize_period(settings, "2026-07")["category_repairs"], 2)
+        with connect(self.db) as con:
+            rows = con.execute(
+                "SELECT category_title,intent_code,short_title FROM entries ORDER BY message_id"
+            ).fetchall()
+        self.assertEqual({row["category_title"] for row in rows}, {"Сдам в аренду"})
+        self.assertEqual({row["intent_code"] for row in rows}, {"rent_offer"})
+        self.assertTrue(all(not row["short_title"].startswith("Сда") for row in rows))
+
     def test_category_aware_titles_are_compact_and_idempotent(self):
         cases = (
             ("sale_offer", "Товары и личные вещи",
@@ -259,6 +295,21 @@ class PipelineTest(unittest.TestCase):
                 "service_offer", "Услуги", source, "Услуги трансфера"
             ),
             "Трансфер",
+        )
+        self.assertEqual(
+            _validate_showcase_title(
+                "Автокресло", "Ищу автокресло", intent_in_category=True
+            ),
+            "Автокресло",
+        )
+        self.assertEqual(
+            _validate_showcase_title(
+                "Ремонт и строительные работы",
+                "Ремонт в Аликанте и Бенидорме",
+                intent_in_category=True,
+                allow_omitted_location=True,
+            ),
+            "Ремонт и строительные работы",
         )
 
     def test_prefilter_removes_vague_price_only_and_expired_relative_posts(self):

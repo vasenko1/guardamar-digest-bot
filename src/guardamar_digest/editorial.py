@@ -6,10 +6,15 @@ import re
 import unicodedata
 
 from .db import connect
-from .llm import OTHER_LOCATION_ALIASES, REAL_ESTATE_SECTIONS
+from .llm import (
+    OTHER_LOCATION_ALIASES,
+    REAL_ESTATE_SECTIONS,
+    _compact_realestate_title,
+    _realestate_mode,
+)
 
 
-VERSION = "2026-08-03.1"
+VERSION = "2026-08-03.2"
 VALID_INTENTS = {
     "sale_offer", "purchase_seek", "giveaway", "rent_offer", "rent_seek",
     "service_offer", "service_seek", "job_offer", "job_seek",
@@ -335,6 +340,19 @@ def normalize_period(settings, period: str) -> dict[str, int]:
             category_emoji = row["category_emoji"]
             title = row["manual_title"] or row["short_title"] or ""
             reason = "metadata refresh"
+            realestate_mode = _realestate_mode(row["source_text"])
+            if (
+                row["manual_category"] is None
+                and category_title in {value[1] for value in REAL_ESTATE_SECTIONS.values()}
+                and realestate_mode
+                and category_title != REAL_ESTATE_SECTIONS[realestate_mode][1]
+            ):
+                category_code, category_title = REAL_ESTATE_SECTIONS[realestate_mode]
+                category_emoji = ""
+                if row["manual_title"] is None:
+                    title = _compact_realestate_title(row["source_text"])
+                reason = "real estate moved to correct intent subsection"
+                counts["category_repairs"] += 1
             if (
                 row["manual_category"] is None
                 and category_title in {value[1] for value in REAL_ESTATE_SECTIONS.values()}

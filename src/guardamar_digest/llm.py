@@ -231,7 +231,8 @@ def _valid_category(category: object) -> bool:
 
 
 def _validate_showcase_title(
-    value: object, source_text: str = "", intent_in_category: bool = False
+    value: object, source_text: str = "", intent_in_category: bool = False,
+    allow_omitted_location: bool = False,
 ) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("model response has empty title")
@@ -262,7 +263,7 @@ def _validate_showcase_title(
     if OPERATIONAL_MARKER.search(title):
         raise ValueError("model response contains an internal trip marker")
     required_location = _required_location(source_text) if source_text else None
-    if required_location and not any(
+    if required_location and not allow_omitted_location and not any(
         alias in title.casefold() for alias in required_location[1]
     ):
         raise ValueError(
@@ -284,7 +285,8 @@ def _validate_showcase_title(
 
 
 def _sanitize_showcase_title(
-    value: object, source_text: str = "", intent_in_category: bool = False
+    value: object, source_text: str = "", intent_in_category: bool = False,
+    allow_omitted_location: bool = False,
 ) -> str:
     """Remove forbidden data that can be deleted without changing the offer."""
     if not isinstance(value, str):
@@ -309,7 +311,9 @@ def _sanitize_showcase_title(
             title = title.rsplit("[", 1)[0].rstrip(" ,;:-")
     while DANGLING_END.search(title):
         title = title.rsplit(" ", 1)[0].rstrip(" ,;:|/\N{EN DASH}\N{EM DASH}-")
-    return _validate_showcase_title(title, source_text, intent_in_category)
+    return _validate_showcase_title(
+        title, source_text, intent_in_category, allow_omitted_location
+    )
 
 
 def _validate_category_assignment(source_text: str, category_title: str) -> None:

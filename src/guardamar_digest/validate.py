@@ -11,6 +11,7 @@ from .prefilter import VERSION as PREFILTER_VERSION, _period_cutoff
 from .render import telegram_length
 from .editorial import (
     VERSION as EDITORIAL_VERSION,
+    INTENT_SUBSECTIONS,
     VALID_INTENTS,
     VALID_LOCATION_SCOPES,
     LOCAL_CITY_IN_TITLE,
@@ -264,7 +265,8 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
             _validate_showcase_title(
                 title,
                 row["source_text"],
-                category in {value[1] for value in REAL_ESTATE_SECTIONS.values()},
+                row["intent_code"] in INTENT_SUBSECTIONS,
+                row["location_scope"] == "mixed",
             )
         except ValueError as exc:
             errors.append(f"message {external_id}: {exc}")
