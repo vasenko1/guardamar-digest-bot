@@ -12,7 +12,7 @@ from .db import connect
 from .llm import _json, _post
 
 
-VERSION = "2026-08-03.1"
+VERSION = "2026-08-03.2"
 _blocked_providers: set[str] = set()
 
 
@@ -93,6 +93,39 @@ def similarity(left: str, right: str) -> float:
 
 def _commercial_topics(text: str) -> set[str]:
     return {name for name, pattern in TOPIC_PATTERNS.items() if pattern.search(text)}
+
+
+SPANISH_CAMPAIGN_BASE = re.compile(
+    r"(?:🇪🇸|🇪🇦).{0,80}іспанськ|"
+    r"іспанськ.{0,80}(?:🇪🇸|🇪🇦)",
+    re.I | re.S,
+)
+SPANISH_CAMPAIGN_MARKERS = {
+    "levels": re.compile(r"\b[aaа]0\b.*\b[cс][12]\b", re.I | re.S),
+    "adaptation": re.compile(r"адапт(?:ац|уват)", re.I),
+    "mini_group": re.compile(r"міні\s*[- ]?\s*груп", re.I),
+    "modern_learning": re.compile(r"сучасн.{0,35}(?:платформ|матеріал)", re.I | re.S),
+    "conversation": re.compile(r"розмов|спілкуван", re.I),
+    "audience": re.compile(r"діт.{0,80}доросл|доросл.{0,80}діт", re.I | re.S),
+    "price_520": re.compile(r"(?<!\d)5[,.]20\s*(?:€|євро)?", re.I),
+}
+
+
+def _spanish_campaign_features(text: str) -> set[str]:
+    """Fingerprint one known Ukrainian Spanish-course advertising campaign."""
+    folded = unicodedata.normalize("NFKC", text).casefold()
+    if not SPANISH_CAMPAIGN_BASE.search(folded) or "онлайн" not in folded:
+        return set()
+    return {
+        name for name, pattern in SPANISH_CAMPAIGN_MARKERS.items()
+        if pattern.search(folded)
+    }
+
+
+def _same_cross_author_spanish_campaign(left: str, right: str) -> bool:
+    """Match only the evidenced multi-account campaign, not Spanish ads broadly."""
+    common = _spanish_campaign_features(left) & _spanish_campaign_features(right)
+    return len(common) >= 3 and bool(common & {"adaptation", "price_520"})
 
 
 def _canonical(rows: list) -> object:
@@ -217,6 +250,40 @@ def dedupe(db_path, period: str) -> dict[str, int]:
                             (round(score, 3), VERSION, left["id"], right["id"]),
                         )
                         review_pairs += 1
+        # One evidenced Spanish-school campaign rotates accounts and rewrites
+        # its Ukrainian copy. Generic topic equality is deliberately
+        # insufficient: a pair needs three shared product markers and either
+        # the exact campaign price or its adaptation slogan.
+        campaign_rows = [
+            row for row in rows if _spanish_campaign_features(row["source_text"])
+        ]
+        for index, left in enumerate(campaign_rows):
+            for right in campaign_rows[index + 1:]:
+                if left["sender_id"] == right["sender_id"] or not (
+                    _same_cross_author_spanish_campaign(
+                        left["source_text"], right["source_text"]
+                    )
+                ):
+                    continue
+                first, second = sorted((left, right), key=lambda row: row["id"])
+                result = con.execute(
+                    """INSERT OR IGNORE INTO duplicate_reviews
+                       (period_key,left_message_id,right_message_id,lexical_score,
+                        left_fingerprint,right_fingerprint)
+                       VALUES (?,?,?,?,?,?)""",
+                    (period, first["id"], second["id"], 0,
+                     fingerprint(first["source_text"]),
+                     fingerprint(second["source_text"])),
+                )
+                if result.rowcount:
+                    con.execute(
+                        """UPDATE entries SET needs_duplicate_review=1,
+                           dedupe_reason='cross-author Spanish campaign',
+                           dedupe_confidence=1.0, dedupe_version=?
+                           WHERE message_id IN (?,?) AND excluded_reason IS NULL""",
+                        (VERSION, first["id"], second["id"]),
+                    )
+                    review_pairs += 1
         _rebuild_semantic_duplicates(con, period)
         # A candidate involving an already excluded message no longer requires
         # arbitration. Keep the row as audit history but remove it from queues.
@@ -350,6 +417,8 @@ def _deterministic_arbitration(left: object, right: object) -> tuple[str, str, s
     intent_a, intent_b = _intent(a), _intent(b)
     if {intent_a, intent_b} == {"offer", "search"}:
         return "different", "intent_conflict", "high"
+    if _same_cross_author_spanish_campaign(a, b):
+        return "same", "cross_author_spanish_campaign", "high"
     cars_a = {tuple(value.casefold() for value in match) for match in CAR_IDENTITY.findall(a)}
     cars_b = {tuple(value.casefold() for value in match) for match in CAR_IDENTITY.findall(b)}
     if cars_a and cars_b and cars_a.isdisjoint(cars_b):
@@ -589,6 +658,7 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
             "intent_conflict", "explicit_date_conflict", "explicit_route_conflict",
             "explicit_vehicle_conflict", "explicit_bedroom_conflict",
             "same_author_safe_campaign",
+            "cross_author_spanish_campaign",
         }
         if hard_rule:
             final_status, final_reason = rule_status, rule_reason

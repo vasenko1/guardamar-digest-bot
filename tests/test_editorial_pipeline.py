@@ -14,6 +14,7 @@ from guardamar_digest.dedupe import (
     _date_features,
     _deterministic_arbitration,
     _route_features,
+    _same_cross_author_spanish_campaign,
     decide_pairs,
     dedupe,
     semantic_dedupe,
@@ -457,6 +458,63 @@ class PipelineTest(unittest.TestCase):
                 "SELECT COUNT(*) FROM entries WHERE period_key='2026-07' AND excluded_reason IS NULL"
             ).fetchone()[0]
         self.assertEqual(published, 1)
+
+    def test_known_ukrainian_spanish_campaign_is_deduplicated_across_authors(self):
+        first = (
+            "🇪🇸ІСПАНСЬКА ДЛЯ ЖИТТЯ, А НЕ ДЛЯ ПІДРУЧНИКІВ. "
+            "Онлайн від A0 до C2, швидко адаптуватися, "
+            "мінігрупи на сучасній платформі, 5,20 євро"
+        )
+        second = (
+            "🇪🇸 ОНЛАЙН-КУРСИ ІСПАНСЬКОЇ МОВИ. "
+            "Курс для швидкої адаптації, рівні A0–C1, "
+            "сучасні матеріали для дітей і дорослих"
+        )
+        self.assertTrue(_same_cross_author_spanish_campaign(first, second))
+        with connect(self.db) as con:
+            add_message(con, 301, first, sender="account-a")
+            add_message(con, 302, second, sender="account-b",
+                        published="2026-07-20T10:00:00")
+        settings = make_settings(self.db)
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)), \
+             patch("guardamar_digest.dedupe._ask_provider",
+                   side_effect=AssertionError("narrow rule must not call an LLM")):
+            result = semantic_dedupe(settings, "2026-07")
+        self.assertEqual(result["unresolved_pairs"], 0)
+        with connect(self.db) as con:
+            active = con.execute(
+                "SELECT COUNT(*) FROM entries WHERE period_key='2026-07' AND excluded_reason IS NULL"
+            ).fetchone()[0]
+            reason = con.execute(
+                "SELECT reason_code FROM duplicate_reviews WHERE period_key='2026-07'"
+            ).fetchone()[0]
+        self.assertEqual(active, 1)
+        self.assertEqual(reason, "cross_author_spanish_campaign")
+        # Re-running the monthly pipeline must rebuild the same canonical
+        # result without reopening the pair or calling a provider.
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)), \
+             patch("guardamar_digest.dedupe._ask_provider",
+                   side_effect=AssertionError("idempotent rerun must not call an LLM")):
+            rerun = semantic_dedupe(settings, "2026-07")
+        self.assertEqual(rerun["unresolved_pairs"], 0)
+        with connect(self.db) as con:
+            active = con.execute(
+                "SELECT COUNT(*) FROM entries WHERE period_key='2026-07' AND excluded_reason IS NULL"
+            ).fetchone()[0]
+        self.assertEqual(active, 1)
+
+    def test_unrelated_spanish_schools_do_not_enter_cross_author_rule(self):
+        campaign = (
+            "🇪🇸 Іспанська онлайн A0–C2, мінігрупи, "
+            "сучасна платформа, 5,20 євро"
+        )
+        bebest = (
+            "🇪🇦 Онлайн-курси іспанської у школі BeBest: "
+            "A0–C1, мінігрупи, сучасна платформа, розмовна практика"
+        )
+        self.assertFalse(_same_cross_author_spanish_campaign(campaign, bebest))
 
     def test_broad_transport_topic_does_not_merge_different_vehicles(self):
         left = {"source_text": "Сдам в аренду Toyota Corolla 2022"}
