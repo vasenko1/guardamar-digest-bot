@@ -14,7 +14,7 @@ from .llm import (
 )
 
 
-VERSION = "2026-08-03.5"
+VERSION = "2026-08-03.6"
 VALID_INTENTS = {
     "sale_offer", "purchase_seek", "giveaway", "rent_offer", "rent_seek",
     "service_offer", "service_seek", "job_offer", "job_seek",
@@ -205,6 +205,9 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
         (r"\bодежд\w*\b.*\b68[-–]80\b", "Одежда для девочки, 68–80 см"),
         (r"вещ\w*\s+для\s+мам\w*.*новорожден", "Вещи для мамы и новорождённого"),
         (r"диван.*2\s+матрас", "Диван и два матраса, 80–90 × 200 см"),
+        (r"велюров\w*\s+костюм", "Велюровый костюм, M–L"),
+        (r"ритмонорм.*этацизин", "Ритмонорм 150 и Этацизин 50"),
+        (r"диван\s+темно[-\s]?син", "Диван"),
     )
     if any(word in category.casefold() for word in ("товар", "вещ", "одежд")):
         for pattern, replacement in templates:
@@ -212,7 +215,9 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
                 title = replacement
                 break
     if "обуч" in category.casefold() or "курс" in category.casefold():
-        if "bebest" in lowered and "онлайн-курс" in lowered:
+        if "mi cielito" in lowered:
+            title = "Группа раннего развития Mi Cielito, 1,5–3 года"
+        elif "bebest" in lowered and "онлайн-курс" in lowered:
             title = "Испанский язык в школе BeBest"
         elif re.search(r"лекц\w*\s+курс|лекційний\s+курс", lowered):
             title = "Испанский язык, 2 раза в неделю"
@@ -220,7 +225,7 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
             title = "Английский язык для детей от 5 лет"
         elif re.search(r"шахмат\w*|шахи", lowered):
             title = "Занятия по шахматам"
-        elif re.search(r"рисован\w*|малюван\w*", lowered):
+        elif re.search(r"рисован\w*|малюван\w*|урок.*(?:рис|картин)", lowered):
             title = "Рисование для детей"
         elif re.search(r"іспанськ|испанск", lowered) and re.search(r"дітей|детей", lowered):
             title = "Испанский язык онлайн для детей и взрослых"
@@ -297,7 +302,9 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
             )
     title = re.sub(r"\s+", " ", title)
     title = re.sub(r"\s+([,;:])", r"\1", title)
-    segments = [segment.strip() for segment in title.split(",")]
+    # Split only editorial comma separators. A decimal comma in "1,5 года"
+    # must remain untouched.
+    segments = [segment.strip() for segment in re.split(r",\s+", title)]
     deduplicated_segments = []
     for segment in segments:
         if segment and (
@@ -421,6 +428,8 @@ def normalize_period(settings, period: str) -> dict[str, int]:
                 counts["category_repairs"] += 1
             intent = infer_intent(category_title, row["source_text"])
             if row["manual_title"] is None:
+                if realestate_mode and category_title == REAL_ESTATE_SECTIONS[realestate_mode][1]:
+                    title = _compact_realestate_title(row["source_text"])
                 title = normalize_title(intent, category_title, row["source_text"], title)
             scope, location = infer_location(row["source_text"], title)
             fingerprint = editorial_fingerprint(

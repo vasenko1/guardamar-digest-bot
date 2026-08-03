@@ -460,7 +460,8 @@ def _realestate_term(source_text: str) -> str | None:
     if re.search(r"\b(?:посуточн\w*|на\s+сутки)\b", source_text, re.I):
         return "посуточно"
     if re.search(
-        r"\b(?:долгосрочн\w*|длительн\w*|на\s+весь\s+год|на\s+год)\b",
+        r"\b(?:долгосрочн\w*|длительн\w*|долг\w*\s+срок|"
+        r"на\s+весь\s+год|на\s+год)\b",
         source_text,
         re.I,
     ):

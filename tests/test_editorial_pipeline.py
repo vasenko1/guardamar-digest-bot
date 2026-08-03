@@ -336,6 +336,14 @@ class PipelineTest(unittest.TestCase):
              "Сдаем Toyota Corolla 2022. Коробка автомат. Кондиционер.",
              "Кондиционеры и холодильное оборудование",
              "Toyota Corolla, 2022"),
+            ("other", "Обучение и курсы",
+             "Группа раннего развития Mi Cielito для детей 1,5–3 года",
+             "Группа раннего развития Mi Cielito, 1, 5–3 года",
+             "Группа раннего развития Mi Cielito, 1,5–3 года"),
+            ("sale_offer", "Товары и вещи",
+             "Продам велюровый костюм размера M-L",
+             "Женский велюровый костюм размера M-L, кофта и брюки",
+             "Велюровый костюм, M–L"),
         )
         for intent, category, source, existing, expected in cases:
             actual = normalize_title(intent, category, source, existing)
