@@ -12,7 +12,7 @@ from .db import connect
 from .llm import _json, _post
 
 
-VERSION = "2026-08-03.2"
+VERSION = "2026-08-03.3"
 _blocked_providers: set[str] = set()
 
 
@@ -403,9 +403,10 @@ def _route_features(text: str) -> set[tuple[str, str]]:
     result = set()
     for left, separator, right in ROUTE_TOKEN.findall(text):
         endpoints = (left.casefold().strip("-"), right.casefold().strip("-"))
-        if separator not in {"→", "↔"} and not all(
-            endpoint in ROUTE_PLACES for endpoint in endpoints
-        ):
+        # Arrows are common in advertising copy ("attention → result").
+        # They become a protected route identity only when both endpoints are
+        # known places; otherwise a marketing phrase can split one campaign.
+        if not all(endpoint in ROUTE_PLACES for endpoint in endpoints):
             continue
         result.add(tuple(sorted(endpoints)) if separator == "↔" else endpoints)
     return result

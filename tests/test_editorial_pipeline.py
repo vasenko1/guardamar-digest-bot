@@ -103,6 +103,8 @@ class PipelineTest(unittest.TestCase):
         )
         self.assertEqual(_route_features("контент-план и SMM-сопровождение"), set())
         self.assertEqual(_route_features("навчання з будь-якої точки"), set())
+        self.assertEqual(_route_features("кожному → швидкий результат"), set())
+        self.assertEqual(_route_features("групи → максимум уваги"), set())
 
     def test_realestate_search_requires_property_as_direct_object(self):
         for text in (
@@ -317,6 +319,13 @@ class PipelineTest(unittest.TestCase):
             ("service_offer", "Красота и здоровье",
              "Предлагаю услуги косметолога. Принимаю в Санта-Поле",
              "Услуги косметолога, Санта-Пола", "Косметолог, Санта-Пола"),
+            ("service_seek", "Бытовые и профессиональные услуги",
+             "Ищу няню в Ла-Марине, двое детей 1 год и 5 лет",
+             "няню в Ла-Марина на лето или год",
+             "Няня для детей 1 и 5 лет, Ла-Марина"),
+            ("service_offer", "Красота и здоровье",
+             "Приглашаю на ламинирование ресничек",
+             "Ламинирование ресничек", "Ламинирование ресниц"),
             ("service_offer", "Бытовые и профессиональные услуги",
              "РИЛС. Сниму для вас видеоролик, режиссура и монтаж",
              "Съемка и монтаж Reels: сюжетные и экспертные видео",
