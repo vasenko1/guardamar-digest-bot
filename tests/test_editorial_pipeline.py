@@ -271,7 +271,7 @@ class PipelineTest(unittest.TestCase):
         with connect(self.db) as con:
             first = add_message(
                 con, 6450,
-                "Сдается квартира на короткий срок июль, август или на весь год. 3 спальни",
+                "Сдается квартира на короткий срок июль, август или на весь год. 3 спальни, кондиционер",
             )
             second = add_message(
                 con, 6537,
@@ -290,6 +290,7 @@ class PipelineTest(unittest.TestCase):
                    VALUES ('2026-07','run','sig',?,'complete')""",
                 (json.dumps([
                     {"code": "transport", "title": "Транспорт и автоуслуги", "emoji": "🚗"},
+                    {"code": "services", "title": "Услуги и ремонт", "emoji": "🛠"},
                     {"code": "realestate_rent_offer", "title": "Сдам в аренду", "emoji": ""},
                     {"code": "realestate_rent_seek", "title": "Сниму в аренду", "emoji": ""},
                 ], ensure_ascii=False),),
@@ -329,11 +330,11 @@ class PipelineTest(unittest.TestCase):
              "Доставка букетов, Торревьеха"),
             ("rent_seek", "Сниму в аренду",
              "Сниму квартиру в Торревьехе",
-             "Квартира, 1–2 спальни, Торрейвехе",
+             "Квартира, 1–2 спальни, Торрейвехе, Торревьеха",
              "Квартира, 1–2 спальни, Торревьеха"),
             ("rent_offer", "Транспорт и автоуслуги",
              "Сдаем Toyota Corolla 2022. Коробка автомат. Кондиционер.",
-             "Toyota Corolla, 2022",
+             "Кондиционеры и холодильное оборудование",
              "Toyota Corolla, 2022"),
         )
         for intent, category, source, existing, expected in cases:

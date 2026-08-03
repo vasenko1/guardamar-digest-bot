@@ -14,7 +14,7 @@ from .llm import (
 )
 
 
-VERSION = "2026-08-03.4"
+VERSION = "2026-08-03.5"
 VALID_INTENTS = {
     "sale_offer", "purchase_seek", "giveaway", "rent_offer", "rent_seek",
     "service_offer", "service_seek", "job_offer", "job_seek",
@@ -160,6 +160,25 @@ def service_title(source: str, existing: str) -> str:
     return existing
 
 
+def vehicle_title(source: str, existing: str) -> str:
+    identity = re.search(
+        r"\b(audi|bmw|chevrolet|citro[eë]n|fiat|ford|honda|hyundai|kia|"
+        r"mazda|mercedes|mitsubishi|nissan|opel|peugeot|renault|seat|"
+        r"skoda|tesla|toyota|volkswagen|volvo)\s+([a-z0-9-]{1,20})\b",
+        source,
+        re.I,
+    )
+    year = re.search(r"\b((?:19|20)\d{2})\b", source)
+    if not identity:
+        return existing
+    brand, model = identity.groups()
+    brand = brand.upper() if brand.casefold() == "bmw" else brand.capitalize()
+    parts = [f"{brand} {model}"]
+    if year:
+        parts.append(year.group(1))
+    return ", ".join(parts)
+
+
 def normalize_title(intent: str, category: str, source: str, existing: str) -> str:
     title = existing
     lowered = source.casefold()
@@ -265,7 +284,10 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
     elif intent == "rent_seek" and ("транспорт" in category.casefold() or "авто" in category.casefold()):
         title = "Автомобиль"
     elif intent == "rent_offer" and ("транспорт" in category.casefold() or "авто" in category.casefold()):
-        if not re.search(r"\b(?:19|20)\d{2}\b", source):
+        repaired_vehicle = vehicle_title(source, title)
+        if repaired_vehicle != title:
+            title = repaired_vehicle
+        elif not re.search(r"\b(?:19|20)\d{2}\b", source):
             title = "Автомобили"
     title = LOCAL_CITY_IN_TITLE.sub("", title)
     for display, aliases in OTHER_LOCATION_ALIASES:
@@ -275,6 +297,15 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
             )
     title = re.sub(r"\s+", " ", title)
     title = re.sub(r"\s+([,;:])", r"\1", title)
+    segments = [segment.strip() for segment in title.split(",")]
+    deduplicated_segments = []
+    for segment in segments:
+        if segment and (
+            not deduplicated_segments
+            or segment.casefold() != deduplicated_segments[-1].casefold()
+        ):
+            deduplicated_segments.append(segment)
+    title = ", ".join(deduplicated_segments)
     title = title.strip(" ,;:–—-")
     append_outside_location = bool(
         original_location and (
@@ -308,7 +339,13 @@ def normalize_period(settings, period: str) -> dict[str, int]:
             raise RuntimeError("Classification must complete before editorial normalization")
         categories = json.loads(run["categories_json"])
         service_category = next(
-            (item for item in categories if re.search(r"услуг", item.get("title", ""), re.I)),
+            (
+                item for item in categories
+                if re.search(r"услуг", item.get("title", ""), re.I)
+                and not re.search(
+                    r"транспорт|авто", item.get("title", ""), re.I
+                )
+            ),
             None,
         )
         if service_category is None:
@@ -371,6 +408,7 @@ def normalize_period(settings, period: str) -> dict[str, int]:
             if (
                 row["manual_category"] is None
                 and category_title in {value[1] for value in REAL_ESTATE_SECTIONS.values()}
+                and realestate_mode is None
                 and SERVICE_DOMINANT.search(row["source_text"])
                 and service_category
             ):
