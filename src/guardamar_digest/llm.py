@@ -105,7 +105,10 @@ def _required_location(source_text: str) -> tuple[str, tuple[str, ...]] | None:
             return display, aliases
     return None
 SOURCE_SEEK = re.compile(
-    r"(?:\b(?:ищу|ищем|куплю|требу(?:ется|ются))\b|"
+    # "Требуется/требуются" describes a vacancy (an offer of work), not a
+    # first-person customer search. Its direction is rendered by the
+    # "Требуется" subsection and must not be repeated in every compact title.
+    r"(?:\b(?:ищу|ищем|куплю)\b|"
     r"\bсниму\b[^.!?\n]{0,80}\b(?:квартир\w*|дом\w*|жиль[еёя]|комнат\w*|"
     r"студи\w*|бунгало|автомобил\w*|машин\w*)\b|"
     r"\b(?:мне|нам)\s+нуж(?:ен|на|ны)\b|"
@@ -538,13 +541,24 @@ def _compact_checkpoint_title(title: str, source_text: str, category_title: str)
                 compact = compact[:limit].rsplit(" ", 1)[0].rstrip(" ,;:–—-")
             compact += suffix
     compact = _sanitize_showcase_title(
-        compact, source_text, category_title in {
-            value[1] for value in REAL_ESTATE_SECTIONS.values()
-        }
+        compact, source_text, _category_carries_intent(category_title)
     )
     _validate_category_assignment(source_text, category_title)
     _validate_compact_title(compact, source_text, category_title)
     return compact
+
+
+def _category_carries_intent(category_title: str) -> bool:
+    """Whether render adds an explicit offer/search subsection for this category."""
+    if category_title in {value[1] for value in REAL_ESTATE_SECTIONS.values()}:
+        return True
+    folded = category_title.casefold()
+    return any(
+        marker in folded for marker in (
+            "товар", "вещ", "одежд", "транспорт", "авто",
+            "работ", "ваканси", "услуг", "красот", "здоров",
+        )
+    )
 
 
 def _ensure_editorial_categories(categories: list[dict], rows: list[dict]) -> tuple[list[dict], bool]:
@@ -993,9 +1007,7 @@ def classify(settings: Settings, period: str) -> str:
               category=fixed_map[entry["category"]]
               title = _sanitize_showcase_title(
                 entry.get("title"), source_text,
-                category["title"] in {
-                  value[1] for value in REAL_ESTATE_SECTIONS.values()
-                },
+                _category_carries_intent(category["title"]),
               )
               if entry["include"]:
                 _validate_category_assignment(source_text, category["title"])
