@@ -324,6 +324,17 @@ def _sanitize_showcase_title(
     title = re.sub(r"\s*[·•|]+\s*", " ", title)
     title = re.sub(r"(?:\s*[-\N{EN DASH}\N{EM DASH},:;/]+\s*)*[)\]]+\s*$", "", title)
     title = re.sub(r"\s+", " ", title).strip(" ,;:|/\N{EN DASH}\N{EM DASH}-")
+    required_location = _required_location(source_text) if source_text else None
+    if (
+        required_location and not allow_omitted_location
+        and not any(alias in title.casefold() for alias in required_location[1])
+    ):
+        suffix = f", {required_location[0]}"
+        limit = TITLE_MAX_LENGTH - len(suffix)
+        if len(title) > limit:
+            shortened = title[:limit].rsplit(" ", 1)[0]
+            title = (shortened or title[:limit]).rstrip(" ,;:|/–—-")
+        title += suffix
     if len(title) > TITLE_MAX_LENGTH:
         shortened = title[:TITLE_MAX_LENGTH].rsplit(" ", 1)[0]
         title = shortened.rstrip(" ,;:|/\N{EN DASH}\N{EM DASH}-")
