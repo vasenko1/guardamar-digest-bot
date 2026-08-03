@@ -830,7 +830,7 @@ class PipelineTest(unittest.TestCase):
             )
         normalize_period(settings, "2026-07")
         part = (
-            '📚 <b>обЪявления Гуардамар</b>\n\n'
+            '📌 <b>Объявления Гуардамара</b>\n\n'
             '📚 <b>Обучение</b>\n'
             '• Занятия по шахматам <a href="https://t.me/MarketGuardamar/30">↗</a>'
         )
@@ -1380,7 +1380,8 @@ class PipelineTest(unittest.TestCase):
         normalize_period(settings, "2026-07")
         output = "\n".join(render(settings, "2026-07"))
         self.assertLess(output.index("Услуги"), output.index("Товары"))
-        self.assertIn("Июль 2026", output)
+        self.assertIn("📌 <b>Объявления Гуардамара</b>", output)
+        self.assertIn("Дайджест за июль 2026", output)
         self.assertIn(
             '<a href="https://t.me/MarketGuardamar">обЪявления Гуардамар</a>',
             output,
