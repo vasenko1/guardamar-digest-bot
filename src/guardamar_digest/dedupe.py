@@ -12,7 +12,7 @@ from .db import connect
 from .llm import _json, _post
 
 
-VERSION = "2026-08-01.1"
+VERSION = "2026-08-03.1"
 _blocked_providers: set[str] = set()
 
 
@@ -34,6 +34,21 @@ TOPIC_PATTERNS = {
     "aircon": re.compile(r"\b(?:кондиционер\w*|воздуховод\w*|холодильн\w*)\b", re.I),
     "construction": re.compile(r"\b(?:ремонт\w*|строительн\w*|отделочн\w*|кухн\w*\s+под\s+заказ)\b", re.I),
 }
+SAFE_CAMPAIGN_TOPICS = {
+    "smm", "spanish_lessons", "bakery", "flowers", "aircon", "construction",
+}
+CAR_IDENTITY = re.compile(
+    r"\b(audi|bmw|chevrolet|citro[eë]n|fiat|ford|honda|hyundai|kia|mazda|"
+    r"mercedes|mitsubishi|nissan|opel|peugeot|renault|seat|skoda|tesla|"
+    r"toyota|volkswagen|volvo)\s+([a-z0-9-]{1,20})\b",
+    re.I,
+)
+BEDROOM_IDENTITY = re.compile(r"\b(\d+)\s*(?:спальн|bedroom|dormitorio)", re.I)
+VAGUE_FOLLOWUP = re.compile(
+    r"^(?:возможно\s+торг|торг|актуально|продано|подробности\s+в\s+личк[уе]|"
+    r"фото\s+по\s+запросу)\W*$",
+    re.I,
+)
 
 CONFIDENCE_MAP = {
     "high": "high", "high confidence": "high", "высокая": "high", "высокий": "high", "высоко": "high",
@@ -81,16 +96,18 @@ def _commercial_topics(text: str) -> set[str]:
 
 
 def _canonical(rows: list) -> object:
-    # Prefer the latest *full* repost. A trailing "возможно торг" or truncated
-    # export must never replace a complete advertisement merely because it is
-    # newer.
-    lengths = [len(normalized(row["source_text"])) if "source_text" in row.keys() else 0 for row in rows]
-    longest = max(lengths, default=0)
-    full = [
-        row for row, length in zip(rows, lengths)
-        if not longest or length >= max(20, int(longest * 0.7))
-    ]
-    return max(full or rows, key=lambda row: (row["published_at"], row["message_id"]))
+    # Once a message is independently meaningful, recency wins. Length is not
+    # a proxy for completeness: concise price/availability updates are valid
+    # standalone ads, while "возможно торг" is not.
+    standalone = []
+    for row in rows:
+        text = normalized(row["source_text"]) if "source_text" in row.keys() else ""
+        if len(text) >= 20 and not VAGUE_FOLLOWUP.fullmatch(text):
+            standalone.append(row)
+    return max(
+        standalone or rows,
+        key=lambda row: (row["published_at"], row["message_id"]),
+    )
 
 
 def dedupe(db_path, period: str) -> dict[str, int]:
@@ -333,14 +350,24 @@ def _deterministic_arbitration(left: object, right: object) -> tuple[str, str, s
     intent_a, intent_b = _intent(a), _intent(b)
     if {intent_a, intent_b} == {"offer", "search"}:
         return "different", "intent_conflict", "high"
+    cars_a = {tuple(value.casefold() for value in match) for match in CAR_IDENTITY.findall(a)}
+    cars_b = {tuple(value.casefold() for value in match) for match in CAR_IDENTITY.findall(b)}
+    if cars_a and cars_b and cars_a.isdisjoint(cars_b):
+        return "different", "explicit_vehicle_conflict", "high"
+    bedrooms_a, bedrooms_b = set(BEDROOM_IDENTITY.findall(a)), set(BEDROOM_IDENTITY.findall(b))
+    if bedrooms_a and bedrooms_b and bedrooms_a.isdisjoint(bedrooms_b):
+        return "different", "explicit_bedroom_conflict", "high"
+    campaign_topics = (
+        _commercial_topics(a) & _commercial_topics(b) & SAFE_CAMPAIGN_TOPICS
+    )
     dates_a, dates_b = _date_features(a), _date_features(b)
-    if dates_a and dates_b and dates_a.isdisjoint(dates_b):
+    if dates_a and dates_b and dates_a.isdisjoint(dates_b) and not campaign_topics:
         return "different", "explicit_date_conflict", "high"
     routes_a, routes_b = _route_features(a), _route_features(b)
     if routes_a and routes_b and routes_a.isdisjoint(routes_b):
         return "different", "explicit_route_conflict", "high"
-    if _commercial_topics(a) & _commercial_topics(b):
-        return "same", "same_author_commercial_topic", "medium"
+    if campaign_topics:
+        return "same", "same_author_safe_campaign", "medium"
     score = similarity(a, b)
     common = tokens(a) & tokens(b)
     smaller = min(len(tokens(a)), len(tokens(b))) or 1
@@ -442,7 +469,7 @@ def discover_topics(settings, period: str) -> tuple[int, int]:
         if len(author_rows) > 10:
             # Large-volume publishers are riskier. Overlapping windows preserve
             # local context; their cross-window matches stay for editor review.
-            windows = [author_rows[index:index + 10] for index in range(0, len(author_rows), 10)]
+            windows = [author_rows[index:index + 10] for index in range(0, len(author_rows), 8)]
         else:
             windows = [author_rows]
         for window in windows:
@@ -560,7 +587,8 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
         rule_status, rule_reason, rule_confidence = _deterministic_arbitration(left, right)
         hard_rule = rule_reason in {
             "intent_conflict", "explicit_date_conflict", "explicit_route_conflict",
-            "same_author_commercial_topic",
+            "explicit_vehicle_conflict", "explicit_bedroom_conflict",
+            "same_author_safe_campaign",
         }
         if hard_rule:
             final_status, final_reason = rule_status, rule_reason
@@ -717,7 +745,7 @@ def _rebuild_semantic_duplicates(con, period: str) -> None:
         (period,),
     )
     pairs = con.execute(
-        """SELECT d.left_message_id, d.right_message_id FROM duplicate_reviews d
+        """SELECT d.left_message_id, d.right_message_id, d.provider FROM duplicate_reviews d
            JOIN entries le ON le.message_id=d.left_message_id
            JOIN entries re ON re.message_id=d.right_message_id
            WHERE d.period_key=? AND d.status='same'
@@ -753,10 +781,20 @@ def _rebuild_semantic_duplicates(con, period: str) -> None:
         right_members = [value for value in union.parent if union.find(value) == right_root]
         conflict = any(
             _deterministic_arbitration(texts[left], texts[right])[1]
-            in {"intent_conflict", "explicit_date_conflict", "explicit_route_conflict"}
+            in {
+                "intent_conflict", "explicit_date_conflict", "explicit_route_conflict",
+                "explicit_vehicle_conflict", "explicit_bedroom_conflict",
+            }
             for left in left_members for right in right_members
         )
         if conflict:
+            if pair["provider"] == "manual":
+                left_external = texts[pair["left_message_id"]]["message_id"]
+                right_external = texts[pair["right_message_id"]]["message_id"]
+                raise RuntimeError(
+                    "Manual duplicate decision conflicts with protected facts: "
+                    f"{left_external}:{right_external}"
+                )
             con.execute(
                 """UPDATE duplicate_reviews SET status='different',
                    reason_code='cluster_stop_feature',

@@ -14,7 +14,7 @@ from .llm import (
 )
 
 
-VERSION = "2026-08-03.2"
+VERSION = "2026-08-03.3"
 VALID_INTENTS = {
     "sale_offer", "purchase_seek", "giveaway", "rent_offer", "rent_seek",
     "service_offer", "service_seek", "job_offer", "job_seek",
@@ -53,7 +53,11 @@ SEEK = re.compile(
     r"хтось\s+прода[єе]|где\s+(?:можно\s+)?приобрести|подскажите)\b",
     re.I,
 )
-RENT = re.compile(r"\b(?:аренд\w*|оренд\w*|сдам|здам|снять|сниму)\b", re.I)
+RENT = re.compile(
+    r"\b(?:аренд\w*|оренд\w*|сда(?:м|ю|ём|ем|ете|ют|ется|ются)|"
+    r"зда(?:м|ю|ємо|єте|ють|ється|ються)|снять|сниму)\b",
+    re.I,
+)
 JOB_SEEK = re.compile(
     r"\bищ(?:у|ем|ет|ут)\s+работ\w*|\bшука\w*\s+робот\w*|"
     r"\bготов\w*\s+приступить\b",

@@ -24,7 +24,8 @@ MAX_RETRIES = 2
 # with truncated or otherwise invalid JSON. Retry the semantic request too,
 # but keep the bound small so one entry cannot consume the daily quota.
 MODEL_RESPONSE_ATTEMPTS = 2
-CLASSIFIER_VERSION = "2026-07-31.2"
+LEGACY_CLASSIFIER_VERSION = "2026-07-31.2"
+CLASSIFIER_VERSION = "2026-08-03.1"
 CATEGORY_CODE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 RUSSIAN_TEXT = re.compile(r"[а-яё]", re.I)
 UKRAINIAN_ONLY = re.compile(r"[іїєґ]", re.I)
@@ -192,13 +193,35 @@ COMPACT_FLUFF = re.compile(
 
 
 def prepare_rows(records) -> list[dict]:
-    return [
-        {
+    rows = []
+    for record in records:
+        source = record["source_text"]
+        cleaned = " ".join(SANITIZE_CONTACT.sub("", source).split())
+        # Keep both the proposition and its trailing dates/locations/terms in
+        # the model input. The full source hash makes any hidden-tail change
+        # invalidate the checkpoint without sending an unbounded prompt.
+        if len(cleaned) > 420:
+            model_text = f"{cleaned[:260]} … {cleaned[-158:]}"
+        else:
+            model_text = cleaned
+        rows.append({
             "id": record["id"],
-            "text": SANITIZE_CONTACT.sub("", record["source_text"])[:420],
-        }
-        for record in records
-    ]
+            "text": model_text,
+            # Contact/whitespace-only edits do not affect the showcase title,
+            # while every semantic character outside the prompt excerpt does.
+            "source_hash": hashlib.sha256(cleaned.encode("utf-8")).hexdigest(),
+        })
+    return rows
+
+
+def legacy_classification_item_fingerprint(message_id: int, source: str) -> str:
+    """Fingerprint used before full-source hashes were introduced."""
+    row = {"id": message_id, "text": SANITIZE_CONTACT.sub("", source)[:420]}
+    return hashlib.sha256(
+        (LEGACY_CLASSIFIER_VERSION + json.dumps(
+            row, ensure_ascii=False, sort_keys=True
+        )).encode()
+    ).hexdigest()
 
 
 def classification_signature(rows: list[dict]) -> str:
@@ -331,8 +354,15 @@ def _realestate_mode(source_text: str) -> str | None:
         return "sale_seek"
     if REAL_ESTATE_SALE.search(source_text):
         return "sale_offer"
-    if SOURCE_SEEK.search(source_text) and re.search(
-        r"\b(?:квартир\w*|жиль[еёя]|бунгало|студи\w*|апартамент\w*|дом\w*)\b",
+    # The property must be the direct object of the request. Merely mentioning
+    # a flat in "ищу мастера для ремонта квартиры" is not a housing search.
+    if re.search(
+        r"\b(?:ищу|ищем|шукаю|шукаємо|сниму|зніму|нужн[аоы]|потрібн[аоі])\b"
+        r"(?:\s+(?:небольш\w*|просторн\w*|подходящ\w*|люб\w*|"
+        r"одно(?:комнатн\w*|кімнатн\w*)|двухкомнатн\w*|двокімнатн\w*|"
+        r"трехкомнатн\w*|трёхкомнатн\w*|трикімнатн\w*|\d+-комнатн\w*)){0,2}\s+"
+        r"(?:квартир\w*|жиль[еёя]|житл\w*|бунгало|студи\w*|"
+        r"апартамент\w*|дом\w*)\b",
         source_text,
         re.I,
     ):
@@ -599,6 +629,7 @@ def _json(text: object) -> dict:
 
 
 def prompt(rows: list[dict], categories: list[dict] | None = None) -> str:
+    model_rows = [{"id": row["id"], "text": row["text"]} for row in rows]
     if categories:
         return """Верни ТОЛЬКО JSON: {\"entries\":[{\"id\":1,\"include\":true,\"category\":\"разрешённый_code\",\"title\":\"...\",\"confidence\":\"high|low\"}]}.
 Для КАЖДОГО переданного id верни ровно один объект. Используй только разрешённые категории. Не пиши цену, контакты, URL; другой город укажи. Если это не самостоятельное объявление, include=false, но title всё равно заполни кратко.
@@ -616,7 +647,7 @@ Title — компактная витринная строка, обычно 18�
 В остальных разделах оставляй предмет и только один главный факт: город, дату, маршрут или аудиторию.
 Еду, выпечку, десерты и цветы помещай только в соответствующий раздел еды/цветов.
 Включай только конкретное предложение или запрос товара, услуги, жилья, работы, транспорта, обучения либо мероприятия. Погода, новости, отзывы, обсуждения и общие вопросы без конкретного запроса — include=false.
-Разрешённые категории: """ + json.dumps(categories, ensure_ascii=False) + "\nДанные:\n" + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+Разрешённые категории: """ + json.dumps(categories, ensure_ascii=False) + "\nДанные:\n" + json.dumps(model_rows, ensure_ascii=False, separators=(",", ":"))
     return """Ты редактор ежемесячного Telegram-дайджеста городской группы Гуардамар.
 Верни ТОЛЬКО JSON: {\"categories\":[{\"code\":\"...\",\"title\":\"...\",\"emoji\":\"...\"}],\"entries\":[{\"id\":1,\"include\":true,\"category\":\"...\",\"title\":\"...\",\"confidence\":\"high|low\"}]}.
 Создай только широкие категории, нужные этому месяцу. Одна строка — одно объявление.
@@ -625,7 +656,7 @@ Title — компактная витринная строка, обычно 18�
 Витринная строка всегда на русском, независимо от языка исходного сообщения.
 Старайся сделать title до 34 символов, но не удаляй существенный факт ради длины. Не дублируй буквальные title в одной категории.
 Исключи ответы, обсуждения, сервисные сообщения и сообщения без самостоятельного объявления.
-""" + ("Используй ТОЛЬКО этот план категорий: " + json.dumps(categories, ensure_ascii=False) + "\n" if categories else "") + "Данные:\n" + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+""" + ("Используй ТОЛЬКО этот план категорий: " + json.dumps(categories, ensure_ascii=False) + "\n" if categories else "") + "Данные:\n" + json.dumps(model_rows, ensure_ascii=False, separators=(",", ":"))
 
 
 def plan_prompt(rows: list[dict]) -> str:
@@ -787,6 +818,12 @@ def classify(settings: Settings, period: str) -> str:
               (
                 existing["classification_version"] == CLASSIFIER_VERSION
                 and existing["classification_fingerprint"] == item_fingerprints[row["id"]]
+              )
+              or (
+                existing["classification_version"] == LEGACY_CLASSIFIER_VERSION
+                and len(SANITIZE_CONTACT.sub("", source_text)) <= 420
+                and existing["classification_fingerprint"]
+                    == legacy_classification_item_fingerprint(row["id"], source_text)
               )
               or (
                 existing["classification_version"] is None

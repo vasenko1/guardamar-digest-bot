@@ -176,9 +176,10 @@ def render(settings, period: str) -> list[str]:
             subsection = INTENT_SUBSECTIONS.get(intent_code) or _intent_subsection(title, source_text)
             if subsection:
                 subsection_groups[subsection].append(entry)
-        # A lone intent label adds noise. Show nested groups only when the
-        # category contains genuinely different editorial intents.
-        if len(subsection_groups) > 1 and sum(map(len, subsection_groups.values())) == len(entries):
+        # Compact titles intentionally omit verbs such as "ищу" and "продам".
+        # Therefore even a single transactional intent needs a visible label;
+        # otherwise the direction of the listing is lost.
+        if subsection_groups and sum(map(len, subsection_groups.values())) == len(entries):
             ordered = sorted(
                 subsection_groups.items(),
                 key=lambda item: (SUBSECTION_ORDER.get(item[0], 99), item[0]),

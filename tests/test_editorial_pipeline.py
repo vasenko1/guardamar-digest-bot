@@ -9,10 +9,22 @@ from unittest.mock import patch
 from guardamar_digest.config import Settings
 from guardamar_digest.db import connect
 from guardamar_digest.dedupe import VERSION as DEDUPE_VERSION
-from guardamar_digest.dedupe import _date_features, _route_features
-from guardamar_digest.dedupe import dedupe, semantic_dedupe
+from guardamar_digest.dedupe import (
+    _canonical,
+    _date_features,
+    _deterministic_arbitration,
+    _route_features,
+    decide_pairs,
+    dedupe,
+    semantic_dedupe,
+)
 from guardamar_digest.importer import import_export
-from guardamar_digest.editorial import infer_location, normalize_period, normalize_title
+from guardamar_digest.editorial import (
+    infer_intent,
+    infer_location,
+    normalize_period,
+    normalize_title,
+)
 from guardamar_digest.llm import (
     _json,
     _compact_checkpoint_title,
@@ -25,6 +37,7 @@ from guardamar_digest.llm import (
     _validate_showcase_title,
     classify,
     classification_signature,
+    classification_item_fingerprint,
     prepare_rows,
 )
 from guardamar_digest.prefilter import prefilter
@@ -89,6 +102,39 @@ class PipelineTest(unittest.TestCase):
         )
         self.assertEqual(_route_features("контент-план и SMM-сопровождение"), set())
         self.assertEqual(_route_features("навчання з будь-якої точки"), set())
+
+    def test_realestate_search_requires_property_as_direct_object(self):
+        for text in (
+            "Ищу мастера для ремонта квартиры",
+            "Ищу мебель в новую квартиру",
+            "Ищем арендаторов для квартиры у моря",
+            "Ищу няню для детей в квартире",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(_realestate_mode(text))
+        self.assertEqual(_realestate_mode("Ищу небольшую квартиру на год"), "rent_seek")
+        self.assertEqual(_realestate_mode("Сниму студию в Торревьехе"), "rent_seek")
+
+    def test_transport_rental_offer_inflections_are_recognized(self):
+        for text in (
+            "Сдаю Toyota Corolla 2022",
+            "Сдаём автомобиль",
+            "Сдается автомобиль на месяц",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(infer_intent("Транспорт", text), "rent_offer")
+
+    def test_classification_fingerprint_and_prompt_include_long_message_tail(self):
+        prefix = "Предлагаю услуги " + "А" * 500
+        first = prepare_rows([{"id": 1, "source_text": prefix + " Торревьеха"}])[0]
+        second = prepare_rows([{"id": 1, "source_text": prefix + " Аликанте"}])[0]
+        self.assertNotEqual(
+            classification_item_fingerprint(first),
+            classification_item_fingerprint(second),
+        )
+        self.assertIn("Торревьеха", first["text"])
+        self.assertIn("Аликанте", second["text"])
+        self.assertLessEqual(len(first["text"]), 421)
 
     def test_prefilter_is_audited_and_preserves_cross_month_date(self):
         settings = make_settings(self.db, {"system"})
@@ -350,10 +396,11 @@ class PipelineTest(unittest.TestCase):
             add_message(con, 11, "Аренда авто в Аликанте напрямую от владельца")
         dedupe(self.db, "2026-07")
         with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)), \
-             patch("guardamar_digest.dedupe._ask_provider") as ask:
+             patch("guardamar_digest.dedupe._ask_provider",
+                   side_effect=ValueError("provider unavailable")) as ask:
             result = semantic_dedupe(settings, "2026-07")
         self.assertEqual(result["unresolved_pairs"], 0)
-        ask.assert_not_called()
+        self.assertEqual(ask.call_count, 2)
         self.assertEqual(result["fallback_pairs"], 1)
         with connect(self.db) as con:
             statuses = {
@@ -388,6 +435,51 @@ class PipelineTest(unittest.TestCase):
                 "SELECT COUNT(*) FROM entries WHERE period_key='2026-07' AND excluded_reason IS NULL"
             ).fetchone()[0]
         self.assertEqual(published, 1)
+
+    def test_broad_transport_topic_does_not_merge_different_vehicles(self):
+        left = {"source_text": "Сдам в аренду Toyota Corolla 2022"}
+        right = {"source_text": "Сдам в аренду Fiat 500L 2015"}
+        self.assertEqual(
+            _deterministic_arbitration(left, right)[:2],
+            ("different", "explicit_vehicle_conflict"),
+        )
+
+    def test_dates_are_identity_for_trips_but_not_safe_campaign_promotions(self):
+        trip_a = {"source_text": "Поездка Торревьеха — Валенсия 4.07"}
+        trip_b = {"source_text": "Поездка Торревьеха — Валенсия 11.07"}
+        self.assertEqual(
+            _deterministic_arbitration(trip_a, trip_b)[:2],
+            ("different", "explicit_date_conflict"),
+        )
+        flowers_a = {"source_text": "Букеты роз, акция 4.07, доставка"}
+        flowers_b = {"source_text": "Цветы и букеты, акция 11.07, доставка"}
+        self.assertEqual(
+            _deterministic_arbitration(flowers_a, flowers_b)[:2],
+            ("same", "same_author_safe_campaign"),
+        )
+
+    def test_canonical_prefers_latest_concise_standalone_ad(self):
+        rows = [
+            {
+                "source_text": "Домашние торты, пирожные, капкейки и доставка по городу",
+                "published_at": "2026-07-01T10:00:00",
+                "message_id": 1,
+            },
+            {
+                "source_text": "Завтра доставлю пирожные Павлова, заказ от четырёх штук",
+                "published_at": "2026-07-20T10:00:00",
+                "message_id": 2,
+            },
+        ]
+        self.assertEqual(_canonical(rows)["message_id"], 2)
+
+    def test_manual_same_decision_cannot_override_protected_conflict(self):
+        with connect(self.db) as con:
+            add_message(con, 201, "Сдам в аренду Toyota Corolla 2022")
+            add_message(con, 202, "Сдам в аренду Fiat 500L 2015")
+        dedupe(self.db, "2026-07")
+        with self.assertRaisesRegex(RuntimeError, "protected facts"):
+            decide_pairs(self.db, "2026-07", [(201, 202)], True)
 
     def test_duplicate_chain_is_flattened_to_active_canonical(self):
         settings = make_settings(self.db)
@@ -1303,6 +1395,29 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("<b>Ищу работу</b>\n• Полная или частичная занятость", output)
         self.assertIn("<b>Предлагаю услуги</b>\n• Маникюр", output)
         self.assertIn("<b>Ищу специалиста</b>\n• Мастер маникюра", output)
+
+    def test_render_keeps_direction_for_single_intent_category(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            message_id = add_message(con, 101, "Ищу детское автокресло")
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='goods',
+                   category_title='Товары',category_emoji='🛍',
+                   short_title='Автокресло',classification_run_id='run'
+                   WHERE message_id=?""",
+                (message_id,),
+            )
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run','sig',?,'complete')""",
+                (json.dumps([
+                    {"code": "goods", "title": "Товары", "emoji": "🛍"},
+                ], ensure_ascii=False),),
+            )
+        normalize_period(settings, "2026-07")
+        output = "\n".join(render(settings, "2026-07"))
+        self.assertIn("<b>Куплю</b>\n• Автокресло", output)
 
     def test_intent_groups_do_not_confuse_free_delivery_with_giveaway(self):
         from guardamar_digest.render import _intent_subsection
