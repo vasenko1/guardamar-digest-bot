@@ -12,12 +12,14 @@ from guardamar_digest.dedupe import VERSION as DEDUPE_VERSION
 from guardamar_digest.dedupe import _date_features, _route_features
 from guardamar_digest.dedupe import dedupe, semantic_dedupe
 from guardamar_digest.importer import import_export
+from guardamar_digest.editorial import infer_location, normalize_period, normalize_title
 from guardamar_digest.llm import (
     _json,
     _compact_checkpoint_title,
     _compact_realestate_title,
     _ensure_editorial_categories,
     _ensure_realestate_categories,
+    _realestate_mode,
     _sanitize_showcase_title,
     _validate_category_assignment,
     _validate_showcase_title,
@@ -130,6 +132,133 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(
             (rows[crossing]["eligible"], rows[crossing]["excluded_reason"]),
             (1, None),
+        )
+
+    def test_expired_cross_month_rental_is_removed_after_its_end_date(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            expired = add_message(
+                con, 7,
+                "Сдам квартиру с 24 июля по 1 августа. Две спальни",
+            )
+            active = add_message(
+                con, 8,
+                "Сдам квартиру с 2 августа по 11 августа. Две спальни",
+            )
+        prefilter(settings, "2026-07", "2026-08-03")
+        with connect(self.db) as con:
+            rows = {
+                row["message_id"]: row
+                for row in con.execute(
+                    "SELECT message_id,eligible,excluded_reason FROM entries"
+                )
+            }
+        self.assertEqual(rows[expired]["excluded_reason"], "expired")
+        self.assertEqual(rows[active]["eligible"], 1)
+
+    def test_service_descriptions_are_not_forced_into_real_estate(self):
+        self.assertIsNone(_realestate_mode(
+            "Ремонт, кухни под заказ и клининг. Уборка квартир и домов"
+        ))
+        self.assertIsNone(_realestate_mode(
+            "Установка окон и дверей для дома, квартиры или офиса"
+        ))
+        self.assertIsNone(_realestate_mode(
+            "Продажа и установка кондиционеров. Работаем с квартирами"
+        ))
+        self.assertEqual(
+            _realestate_mode("Квартира у моря свободна с 2 по 11 августа"),
+            "rent_offer",
+        )
+
+    def test_editorial_normalization_repairs_false_realestate_and_metadata(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            repair = add_message(
+                con, 200,
+                "Ремонт, кухни под заказ и клининг. Уборка квартир и домов",
+            )
+            windows = add_message(
+                con, 201,
+                "Предлагаем окна и двери для дома, квартиры или офиса",
+            )
+            con.execute(
+                """UPDATE entries SET category_code='realestate_rent_offer',
+                   category_title='Сдам в аренду',category_emoji='',
+                   short_title='Апартаменты',classification_run_id='run'
+                   WHERE message_id IN (?,?)""",
+                (repair, windows),
+            )
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run','sig',?,'complete')""",
+                (json.dumps([
+                    {"code": "realestate_rent_offer", "title": "Сдам в аренду", "emoji": ""},
+                ], ensure_ascii=False),),
+            )
+        result = normalize_period(settings, "2026-07")
+        self.assertEqual(result["category_repairs"], 2)
+        with connect(self.db) as con:
+            rows = con.execute(
+                """SELECT category_code,short_title,intent_code,editorial_version
+                   FROM entries ORDER BY message_id"""
+            ).fetchall()
+            stage = con.execute(
+                """SELECT status FROM workflow_runs
+                   WHERE period_key='2026-07' AND stage='editorial_normalization'"""
+            ).fetchone()
+        self.assertEqual(rows[0]["category_code"], "services")
+        self.assertEqual(rows[0]["short_title"], "Ремонт, кухни и клининг")
+        self.assertEqual(rows[1]["short_title"], "Окна и двери")
+        self.assertEqual({row["intent_code"] for row in rows}, {"service_offer"})
+        self.assertTrue(all(row["editorial_version"] for row in rows))
+        self.assertEqual(stage["status"], "complete")
+        self.assertEqual(normalize_period(settings, "2026-07")["changed"], 0)
+
+    def test_category_aware_titles_are_compact_and_idempotent(self):
+        cases = (
+            ("sale_offer", "Товары и личные вещи",
+             "Автокресло Cosatto для детей до 4 лет, 9-18 кг, 3 положения",
+             "Автокресло Cosatto", "Автокресло Cosatto"),
+            ("purchase_seek", "Товары и личные вещи",
+             "Ищу автокресло с функцией поворота на 360 градусов",
+             "Ищу детское автокресло с функцией поворота на 360 градусов",
+             "Автокресло с поворотом 360°"),
+            ("service_offer", "Красота и здоровье",
+             "Предлагаю услуги косметолога. Принимаю в Санта-Поле",
+             "Услуги косметолога, Санта-Пола", "Косметолог, Санта-Пола"),
+            ("service_offer", "Бытовые и профессиональные услуги",
+             "РИЛС. Сниму для вас видеоролик, режиссура и монтаж",
+             "Съемка и монтаж Reels: сюжетные и экспертные видео",
+             "Съёмка и монтаж Reels"),
+            ("service_offer", "Бытовые и профессиональные услуги",
+             "Индивидуальный пошив и ремонт одежды в Guardamar del Segura",
+             "Индивидуальный пошив и ремонт одежды, Guardamar del Segura",
+             "Пошив и ремонт одежды"),
+            ("service_offer", "Еда и цветы",
+             "Доставка букетов Гуардамар-дель-Сегура, Торревьеха",
+             "Доставка букетов и-дель-Сегура, Торревьеха",
+             "Доставка букетов, Торревьеха"),
+        )
+        for intent, category, source, existing, expected in cases:
+            actual = normalize_title(intent, category, source, existing)
+            self.assertEqual(actual, expected)
+            self.assertEqual(
+                normalize_title(intent, category, source, actual), actual
+            )
+
+    def test_location_coverage_and_transfer_title_are_normalized(self):
+        source = "Предлагаю трансфер в аэропорты Аликанте, Валенсия и Мурсия"
+        self.assertEqual(
+            infer_location(source, "Трансфер"),
+            ("mixed", "Аликанте, Валенсия"),
+        )
+        self.assertEqual(
+            normalize_title(
+                "service_offer", "Услуги", source, "Услуги трансфера"
+            ),
+            "Трансфер",
         )
 
     def test_prefilter_removes_vague_price_only_and_expired_relative_posts(self):
@@ -467,6 +596,7 @@ class PipelineTest(unittest.TestCase):
                    VALUES ('2026-07','run',?,'[]','complete')""",
                 (signature,),
             )
+        normalize_period(settings, "2026-07")
         part = (
             '📚 <b>обЪявления Гуардамар</b>\n\n'
             '📚 <b>Обучение</b>\n'
@@ -502,6 +632,7 @@ class PipelineTest(unittest.TestCase):
                    VALUES ('2026-07','run',?,'[]','complete')""",
                 (signature,),
             )
+        normalize_period(settings, "2026-07")
         result = validate_period(settings, "2026-07")
         self.assertTrue(result.ok, result.errors)
         self.assertTrue(any("repeated compact title" in item for item in result.warnings))
@@ -909,7 +1040,7 @@ class PipelineTest(unittest.TestCase):
             [dict(row) for row in rows],
             [
                 {"short_title": "Стул IKEA", "category_title": "Товары"},
-                {"short_title": "Домашние торты и пирожные", "category_title": "Еда и доставка"},
+                {"short_title": "Торты и десерты", "category_title": "Еда и доставка"},
             ],
         )
         self.assertIn('"title": "Еда и доставка"', run["categories_json"])
@@ -992,6 +1123,7 @@ class PipelineTest(unittest.TestCase):
                     {"code": "goods", "title": "Товары", "emoji": "🛍"},
                 ], ensure_ascii=False),)
             )
+        normalize_period(settings, "2026-07")
         output = "\n".join(render(settings, "2026-07"))
         self.assertLess(output.index("Услуги"), output.index("Товары"))
         self.assertIn("Июль 2026", output)
@@ -1051,13 +1183,15 @@ class PipelineTest(unittest.TestCase):
                     {"code": "services", "title": "Услуги", "emoji": "🛠"},
                 ], ensure_ascii=False),),
             )
+        normalize_period(settings, "2026-07")
         output = "\n".join(render(settings, "2026-07"))
-        self.assertLess(output.index("Массаж "), output.index("Услуги трансфера"))
-        self.assertLess(output.index("Услуги трансфера"), output.index("Массаж, Санта-Пола"))
+        folded = output.casefold()
+        self.assertLess(folded.index("массаж "), folded.index("трансфер"))
+        self.assertLess(folded.index("массаж "), folded.index("массаж, санта-пола"))
         self.assertNotIn("Гвардамар", output)
         self.assertNotIn("Guardamar del Segura", output)
         self.assertIn("• Маникюр ", output)
-        self.assertIn("• Остеопатия ", output)
+        self.assertIn("• Остеопатия и мануальная терапия ", output)
 
     def test_display_title_removes_local_city_but_keeps_other_city(self):
         from guardamar_digest.render import _display_title
@@ -1106,15 +1240,16 @@ class PipelineTest(unittest.TestCase):
                     {"code": "beauty", "title": "Красота", "emoji": "💅"},
                 ], ensure_ascii=False),),
             )
+        normalize_period(settings, "2026-07")
         output = "\n".join(render(settings, "2026-07"))
         self.assertIn("<b>Продажа</b>\n• Стул", output)
         self.assertIn("<b>Куплю</b>\n• Автокресло", output)
         self.assertIn("<b>Отдам</b>\n• Духовка", output)
-        self.assertIn("<b>Сдам в аренду</b>\n• Toyota Corolla", output)
+        self.assertIn("<b>Сдам в аренду</b>\n• Автомобили", output)
         self.assertIn("<b>Сниму в аренду</b>\n• Автомобиль", output)
         self.assertIn("<b>Поездки и трансфер</b>\n• Трансфер", output)
         self.assertIn("<b>Требуется</b>\n• Помощник на кухню", output)
-        self.assertIn("<b>Ищу работу</b>\n• Повар", output)
+        self.assertIn("<b>Ищу работу</b>\n• Полная или частичная занятость", output)
         self.assertIn("<b>Предлагаю услуги</b>\n• Маникюр", output)
         self.assertIn("<b>Ищу специалиста</b>\n• Мастер маникюра", output)
 
@@ -1208,6 +1343,7 @@ class PipelineTest(unittest.TestCase):
                     {"code": "realestate_rent_seek", "title": "Сниму в аренду", "emoji": ""},
                 ], ensure_ascii=False),),
             )
+        normalize_period(settings, "2026-07")
         output = "\n".join(render(settings, "2026-07"))
         self.assertEqual(output.count("<b>Недвижимость</b>"), 1)
         self.assertIn("<b>Сдам в аренду</b>\n• Квартира, длительно", output)

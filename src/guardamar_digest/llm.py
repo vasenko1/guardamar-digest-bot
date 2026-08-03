@@ -147,6 +147,26 @@ REAL_ESTATE_ACTION = re.compile(
     r"прода[её]тся|куплю|покупк\w*)\b",
     re.I,
 )
+REAL_ESTATE_OFFER = re.compile(
+    r"\b(?:сдам|сдаю|сда[её]тся|продам|прода[её]тся)\b"
+    r"[^.!?\n]{0,100}\b(?:квартир\w*|жиль[еёя]|бунгало|студи\w*|"
+    r"апартамент\w*|дом\w*)\b|"
+    r"\b(?:квартир\w*|жиль[еёя]|бунгало|студи\w*|апартамент\w*|дом\w*)\b"
+    r"[^.!?\n]{0,100}\b(?:сда[её]тся|прода[её]тся|свободн\w*)\b",
+    re.I,
+)
+REAL_ESTATE_SALE = re.compile(
+    r"\b(?:продам|прода[её]тся)\b[^.!?\n]{0,100}"
+    r"\b(?:квартир\w*|жиль[еёя]|бунгало|студи\w*|апартамент\w*|дом\w*)\b|"
+    r"\b(?:квартир\w*|бунгало|студи\w*|апартамент\w*|дом\w*)\b"
+    r"[^.!?\n]{0,100}\bпрода[её]тся\b",
+    re.I,
+)
+REAL_ESTATE_PURCHASE = re.compile(
+    r"\bкуплю\b[^.!?\n]{0,100}"
+    r"\b(?:квартир\w*|жиль[еёя]|бунгало|студи\w*|апартамент\w*|дом\w*)\b",
+    re.I,
+)
 CAR_BRAND = re.compile(
     r"\b(?:audi|bmw|chevrolet|citro[eë]n|fiat|ford|honda|hyundai|kia|"
     r"mazda|mercedes|mitsubishi|nissan|opel|peugeot|renault|seat|"
@@ -303,13 +323,28 @@ def _validate_category_assignment(source_text: str, category_title: str) -> None
 def _realestate_mode(source_text: str) -> str | None:
     if not REAL_ESTATE_SOURCE.search(source_text):
         return None
-    if re.search(r"\bкуплю\b", source_text, re.I):
+    if REAL_ESTATE_PURCHASE.search(source_text):
         return "sale_seek"
-    if re.search(r"\b(?:продам|прода[её]тся|продажа)\b", source_text, re.I):
+    if REAL_ESTATE_SALE.search(source_text):
         return "sale_offer"
-    if SOURCE_SEEK.search(source_text):
+    if SOURCE_SEEK.search(source_text) and re.search(
+        r"\b(?:квартир\w*|жиль[еёя]|бунгало|студи\w*|апартамент\w*|дом\w*)\b",
+        source_text,
+        re.I,
+    ):
         return "rent_seek"
-    return "rent_offer"
+    if REAL_ESTATE_OFFER.search(source_text):
+        return "rent_offer"
+    first_line = next(
+        (line.strip() for line in source_text.splitlines() if line.strip()), ""
+    )
+    if REAL_ESTATE_SOURCE.search(first_line) and re.search(
+        r"\b(?:на\s+год|долгосрочн\w*|посуточн\w*|свободн\w*)\b",
+        source_text,
+        re.I,
+    ):
+        return "rent_offer"
+    return None
 
 
 def _validate_compact_title(title: str, source_text: str, category_title: str) -> None:
@@ -929,4 +964,6 @@ def classify(settings: Settings, period: str) -> str:
           f"classification checkpoint is incomplete: {remaining} entries remain"
         )
       con.execute("UPDATE classification_runs SET status='complete',lock_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE period_key=? AND run_id=?",(period,run_id))
+    from .editorial import normalize_period
+    normalize_period(settings, period)
     return "+".join(sorted(set(provider_used)))

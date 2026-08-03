@@ -9,6 +9,13 @@ from .db import connect
 from .dedupe import VERSION as DEDUPE_VERSION
 from .prefilter import VERSION as PREFILTER_VERSION, _period_cutoff
 from .render import telegram_length
+from .editorial import (
+    VERSION as EDITORIAL_VERSION,
+    VALID_INTENTS,
+    VALID_LOCATION_SCOPES,
+    LOCAL_CITY_IN_TITLE,
+    editorial_fingerprint,
+)
 from .llm import (
     PHONE_NUMBER,
     REAL_ESTATE_SECTIONS,
@@ -141,6 +148,16 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
         ).fetchone()
         if not dedupe_run or dedupe_run["status"] != "complete" or dedupe_run["rule_version"] != DEDUPE_VERSION:
             errors.append("current automatic duplicate arbitration was not completed")
+        editorial_run = con.execute(
+            """SELECT status,rule_version FROM workflow_runs
+               WHERE period_key=? AND stage='editorial_normalization'""",
+            (period,),
+        ).fetchone()
+        if (
+            not editorial_run or editorial_run["status"] != "complete"
+            or editorial_run["rule_version"] != EDITORIAL_VERSION
+        ):
+            errors.append("current editorial normalization was not completed")
         unresolved = con.execute(
             """SELECT COUNT(*) FROM duplicate_reviews
                WHERE period_key=? AND status IN ('pending','uncertain')""", (period,)
@@ -192,7 +209,9 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
         rows = con.execute(
             """SELECT m.message_id,m.sender_id,m.source_url,m.source_text,
                       e.short_title,e.manual_title,
-                      e.category_code,e.category_title,e.manual_category
+                      e.category_code,e.category_title,e.manual_category,
+                      e.intent_code,e.location_scope,e.location_name,
+                      e.editorial_fingerprint,e.editorial_version
                FROM entries e JOIN messages m ON m.id=e.message_id
                WHERE e.period_key=? AND e.eligible=1 AND e.excluded_reason IS NULL""",
             (period,),
@@ -225,6 +244,22 @@ def validate_period(settings, period: str, rendered_parts: list[str] | None = No
             errors.append(f"message {external_id}: unbalanced punctuation in title")
         if UKRAINIAN_ONLY.search(title):
             errors.append(f"message {external_id}: showcase title is not normalized to Russian")
+        if LOCAL_CITY_IN_TITLE.search(title):
+            errors.append(f"message {external_id}: local city is redundant in showcase title")
+        if row["intent_code"] not in VALID_INTENTS:
+            errors.append(f"message {external_id}: missing or invalid editorial intent")
+        if row["location_scope"] not in VALID_LOCATION_SCOPES:
+            errors.append(f"message {external_id}: missing or invalid location scope")
+        if row["location_scope"] in {"outside", "mixed"} and not row["location_name"]:
+            errors.append(f"message {external_id}: outside location has no normalized name")
+        expected_editorial_fingerprint = editorial_fingerprint(
+            row["source_text"], category, title, row["manual_title"] or ""
+        )
+        if (
+            row["editorial_version"] != EDITORIAL_VERSION
+            or row["editorial_fingerprint"] != expected_editorial_fingerprint
+        ):
+            errors.append(f"message {external_id}: editorial metadata is stale")
         try:
             _validate_showcase_title(
                 title,

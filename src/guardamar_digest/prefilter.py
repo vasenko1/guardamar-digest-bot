@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from .db import connect
 
 
-VERSION = "2026-07-31.1"
+VERSION = "2026-08-03.1"
 GENERIC_ONLY = re.compile(
     r"^(?:прода[её]тся|продам|торг|возможен торг|возможно торг|"
     r"актуально|срочно|подробности в личк[еу]|пишите в личк[еу])[\s.!?,…-]*$",
@@ -30,6 +30,11 @@ DATED_ACTIVITY = re.compile(
     r"игр\w*|мафи\w*|мастер[\s-]?класс\w*|ретрит\w*|экскурси\w*|"
     r"спектакл\w*|концерт\w*|лагер\w*|"
     r"доступн[а-яіїєґ]*\s+с|сдам\s+с)\b",
+    re.I,
+)
+DATED_RENTAL_RANGE = re.compile(
+    r"\b(?:сдам|сдаю|сда[её]тся)\b[^.!?\n]{0,120}\bс\b"
+    r"[^.!?\n]{0,60}\bпо\b",
     re.I,
 )
 MONTHS = {
@@ -152,7 +157,9 @@ def prefilter(settings, period: str, as_of: str | None = None) -> dict[str, int]
                 # Exclude only clearly date-bound activities when every explicit
                 # date is already over. A range reaching the cutoff/next month
                 # remains eligible.
-                if dates and DATED_ACTIVITY.search(text) and max(dates) < cutoff:
+                if dates and (
+                    DATED_ACTIVITY.search(text) or DATED_RENTAL_RANGE.search(text)
+                ) and max(dates) < cutoff:
                     code, detail = "expired", f"latest explicit date={max(dates).isoformat()}; as_of={cutoff.isoformat()}"
                 elif (
                     re.search(r"\b(?:только сегодня|лишь сегодня|акция\s+\w+|акція\s+\w+)\b", text, re.I)

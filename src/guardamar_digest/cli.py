@@ -6,6 +6,7 @@ from .importer import import_export
 from .dedupe import dedupe, semantic_dedupe, review_report
 from .dedupe import decide_pairs, exclude_messages, exclude_senders
 from .llm import classify
+from .editorial import normalize_period
 from .prefilter import audit_report, prefilter
 from .publisher import publish_parts
 from .render import render
@@ -27,6 +28,7 @@ def main():
     x=sub.add_parser("exclude"); x.add_argument("--period", required=True); x.add_argument("--reason", required=True); x.add_argument("message_ids", nargs="+", type=int)
     x=sub.add_parser("apply-author-exclusions"); x.add_argument("--period", required=True)
     x=sub.add_parser("classify"); x.add_argument("--period", required=True)
+    x=sub.add_parser("normalize"); x.add_argument("--period", required=True)
     x=sub.add_parser("validate"); x.add_argument("--period", required=True)
     x=sub.add_parser("preview"); x.add_argument("--period", required=True); x.add_argument("--send", action="store_true")
     x=sub.add_parser("publish"); x.add_argument("--period", required=True)
@@ -54,6 +56,7 @@ def main():
     elif a.cmd=="exclude": print(exclude_messages(s.db_path, a.period, a.message_ids, a.reason))
     elif a.cmd=="apply-author-exclusions": print(exclude_senders(s.db_path, a.period, s.excluded_sender_ids))
     elif a.cmd=="classify": print(classify(s,a.period))
+    elif a.cmd=="normalize": print(json.dumps(normalize_period(s,a.period), ensure_ascii=False))
     elif a.cmd=="validate":
         parts=render(s,a.period)
         result=validate_period(s,a.period,parts)

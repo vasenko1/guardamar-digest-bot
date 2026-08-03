@@ -44,7 +44,13 @@ CREATE TABLE IF NOT EXISTS entries (
   dedupe_reason TEXT,
   dedupe_confidence REAL,
   dedupe_version TEXT,
-  needs_duplicate_review INTEGER NOT NULL DEFAULT 0
+  needs_duplicate_review INTEGER NOT NULL DEFAULT 0,
+  intent_code TEXT,
+  location_scope TEXT,
+  location_name TEXT,
+  editorial_fingerprint TEXT,
+  editorial_version TEXT,
+  editorial_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS publications (
   period_key TEXT NOT NULL,
@@ -136,6 +142,12 @@ def migrate(con: sqlite3.Connection) -> None:
     _add_column_if_missing(con, "entries", "classification_run_id TEXT")
     _add_column_if_missing(con, "entries", "classification_fingerprint TEXT")
     _add_column_if_missing(con, "entries", "classification_version TEXT")
+    _add_column_if_missing(con, "entries", "intent_code TEXT")
+    _add_column_if_missing(con, "entries", "location_scope TEXT")
+    _add_column_if_missing(con, "entries", "location_name TEXT")
+    _add_column_if_missing(con, "entries", "editorial_fingerprint TEXT")
+    _add_column_if_missing(con, "entries", "editorial_version TEXT")
+    _add_column_if_missing(con, "entries", "editorial_reason TEXT")
     _add_column_if_missing(con, "dedupe_topics", "text_fingerprint TEXT")
     _add_column_if_missing(con, "dedupe_topics", "rule_version TEXT")
     _add_column_if_missing(con, "duplicate_reviews", "left_fingerprint TEXT")
