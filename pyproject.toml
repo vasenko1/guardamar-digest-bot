@@ -1,7 +1,7 @@
 [project]
 name = "guardamar-digest"
 version = "0.1.0"
-description = "Monthly Telegram digest from a Telegram Desktop JSON export"
+description = "Monthly Telegram digest with live Bot API collection and JSON fallback"
 requires-python = ">=3.9"
 dependencies = [
   # Android/Termux installations may not ship the IANA timezone database.
