@@ -101,7 +101,9 @@ def _mark_period_pending(con, period: str) -> None:
         )
 
 
-def _apply_message(con, settings, message: dict[str, Any]) -> tuple[str, str | None]:
+def _apply_message(
+    con, settings, message: dict[str, Any], *, is_edited: bool = False
+) -> tuple[str, str | None]:
     chat = message.get("chat")
     if not isinstance(chat, dict) or str(chat.get("id", "")) != str(settings.source_chat_id):
         return "ignored_chat", None
@@ -115,14 +117,36 @@ def _apply_message(con, settings, message: dict[str, Any]) -> tuple[str, str | N
     ):
         return "ignored_bot", None
 
-    text = str(message.get("text") or message.get("caption") or "").strip()
-    if not text:
-        return "ignored_empty", None
-
     message_id = message.get("message_id")
     timestamp = message.get("date")
     if not isinstance(message_id, int) or not isinstance(timestamp, int):
         return "ignored_invalid", None
+
+    text = str(message.get("text") or message.get("caption") or "").strip()
+    if not text:
+        if not is_edited:
+            return "ignored_empty", None
+        existing = con.execute(
+            """SELECT m.id,e.period_key FROM messages m
+               JOIN entries e ON e.message_id=m.id
+               WHERE m.chat_id=? AND m.message_id=?""",
+            (str(settings.source_chat_id), message_id),
+        ).fetchone()
+        if existing is None:
+            return "ignored_empty", None
+        con.execute(
+            """UPDATE entries SET eligible=0,excluded_reason='source text removed',
+               dedupe_reason='collector edit',duplicate_of=NULL,
+               dedupe_confidence=NULL,dedupe_version=NULL,
+               needs_duplicate_review=0 WHERE message_id=?""",
+            (existing["id"],),
+        )
+        con.execute(
+            "DELETE FROM editorial_audit WHERE period_key=? AND message_id=?",
+            (existing["period_key"], existing["id"]),
+        )
+        _mark_period_pending(con, existing["period_key"])
+        return "excluded_empty_edit", existing["period_key"]
 
     period, published_at = _period_and_published(timestamp)
     values = {
@@ -176,7 +200,7 @@ def _apply_message(con, settings, message: dict[str, Any]) -> tuple[str, str | N
     con.execute(
         """UPDATE entries SET eligible=1,excluded_reason=NULL,dedupe_reason=NULL
            WHERE message_id=? AND period_key=?
-             AND dedupe_reason='import reconciliation'""",
+             AND dedupe_reason IN ('import reconciliation','collector edit')""",
         (internal_id, period),
     )
     if not changed:
@@ -260,6 +284,7 @@ def collect(
         "ignored_bot": 0,
         "ignored_empty": 0,
         "ignored_invalid": 0,
+        "excluded_empty_edit": 0,
     }
 
     while True:
@@ -274,9 +299,12 @@ def collect(
                 if not isinstance(update_id, int):
                     continue
                 stats["updates"] += 1
+                edited = isinstance(update.get("edited_message"), dict)
                 message = update.get("edited_message") or update.get("message")
                 if isinstance(message, dict):
-                    outcome, _ = _apply_message(con, settings, message)
+                    outcome, _ = _apply_message(
+                        con, settings, message, is_edited=edited
+                    )
                     stats[outcome] = stats.get(outcome, 0) + 1
                 if max_update_id is None or update_id > max_update_id:
                     max_update_id = update_id
