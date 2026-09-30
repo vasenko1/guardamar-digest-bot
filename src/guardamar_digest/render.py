@@ -210,7 +210,7 @@ def render(settings, period: str) -> list[str]:
     )
     return [
         f"📌 <b>Объявления Гуардамара</b>\n"
-        f"Дайджест за {month} · Часть {i} из {total}\n\n{body}"
+        f"Дайджест объявлений за {month} · Часть {i} из {total}\n\n{body}"
         + (footer if i == total else "")
         for i, body in enumerate(parts, 1)
     ]
