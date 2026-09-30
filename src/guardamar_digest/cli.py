@@ -11,6 +11,7 @@ from .prefilter import audit_report, prefilter
 from .publisher import publish_parts
 from .render import render
 from .validate import validate_period
+from .collector import collect, collector_status
 
 def send(token, chat_id, text):
     req=Request(f"https://api.telegram.org/bot{token}/sendMessage", data=json.dumps({"chat_id":chat_id,"text":text,"parse_mode":"HTML","disable_web_page_preview":True}).encode(), headers={"Content-Type":"application/json"}, method="POST")
@@ -32,8 +33,12 @@ def main():
     x=sub.add_parser("validate"); x.add_argument("--period", required=True)
     x=sub.add_parser("preview"); x.add_argument("--period", required=True); x.add_argument("--send", action="store_true")
     x=sub.add_parser("publish"); x.add_argument("--period", required=True)
+    sub.add_parser("collect")
+    sub.add_parser("collector-status")
     a=p.parse_args(); s=settings()
-    if a.cmd=="import": print(import_export(s.db_path, __import__('pathlib').Path(a.file), a.period, s.source_chat_id, s.source_username))
+    if a.cmd=="collect": print(json.dumps(collect(s), ensure_ascii=False))
+    elif a.cmd=="collector-status": print(json.dumps(collector_status(s), ensure_ascii=False))
+    elif a.cmd=="import": print(import_export(s.db_path, __import__('pathlib').Path(a.file), a.period, s.source_chat_id, s.source_username))
     elif a.cmd=="prefilter": print(json.dumps(prefilter(s, a.period, a.as_of), ensure_ascii=False))
     elif a.cmd=="prefilter-audit": print(audit_report(s.db_path, a.period))
     elif a.cmd=="dedupe":
