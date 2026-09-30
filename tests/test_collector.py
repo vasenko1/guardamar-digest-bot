@@ -139,6 +139,45 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(stages["prefilter"], "pending")
         self.assertEqual(stages["semantic_dedupe"], "pending")
 
+    def test_empty_edit_excludes_and_later_text_restores_record(self):
+        collect(
+            self.settings,
+            now=self.start,
+            fetcher=lambda token, offset: [message_update(15, 250, "Подпись")],
+        )
+        empty_edit = message_update(16, 250, "", edited=True)
+        result = collect(
+            self.settings,
+            now=self.start + timedelta(minutes=5),
+            fetcher=lambda token, offset: [empty_edit],
+        )
+        self.assertEqual(result["excluded_empty_edit"], 1)
+        with connect(self.db) as con:
+            row = con.execute(
+                """SELECT e.eligible,e.excluded_reason,e.dedupe_reason
+                   FROM entries e JOIN messages m ON m.id=e.message_id
+                   WHERE m.message_id=250"""
+            ).fetchone()
+        self.assertEqual(row["eligible"], 0)
+        self.assertEqual(row["dedupe_reason"], "collector edit")
+
+        restored = message_update(17, 250, "Новая подпись", edited=True)
+        collect(
+            self.settings,
+            now=self.start + timedelta(minutes=10),
+            fetcher=lambda token, offset: [restored],
+        )
+        with connect(self.db) as con:
+            row = con.execute(
+                """SELECT m.source_text,e.eligible,e.excluded_reason,e.dedupe_reason
+                   FROM entries e JOIN messages m ON m.id=e.message_id
+                   WHERE m.message_id=250"""
+            ).fetchone()
+        self.assertEqual(row["source_text"], "Новая подпись")
+        self.assertEqual(row["eligible"], 1)
+        self.assertIsNone(row["excluded_reason"])
+        self.assertIsNone(row["dedupe_reason"])
+
     def test_repeat_delivery_is_idempotent(self):
         collect(
             self.settings,
