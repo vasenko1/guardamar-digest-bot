@@ -1381,7 +1381,7 @@ class PipelineTest(unittest.TestCase):
         output = "\n".join(render(settings, "2026-07"))
         self.assertLess(output.index("Услуги"), output.index("Товары"))
         self.assertIn("📌 <b>Объявления Гуардамара</b>", output)
-        self.assertIn("Дайджест за июль 2026", output)
+        self.assertIn("Дайджест объявлений за июль 2026", output)
         self.assertIn(
             '<a href="https://t.me/MarketGuardamar">обЪявления Гуардамар</a>',
             output,
