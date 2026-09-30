@@ -120,6 +120,14 @@ CREATE TABLE IF NOT EXISTS dedupe_topics (
   rule_version TEXT,
   PRIMARY KEY(period_key, message_id)
 );
+CREATE TABLE IF NOT EXISTS collector_state (
+  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+  last_update_id INTEGER,
+  last_success_at TEXT,
+  coverage_status TEXT NOT NULL DEFAULT 'unknown',
+  coverage_reason TEXT,
+  started_at TEXT NOT NULL
+);
 """
 
 
