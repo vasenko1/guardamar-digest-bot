@@ -15,7 +15,7 @@ from .llm import (
 )
 
 
-VERSION = "2026-10-01.2"
+VERSION = "2026-10-01.3"
 VALID_INTENTS = {
     "sale_offer", "purchase_seek", "giveaway", "rent_offer", "rent_seek",
     "service_offer", "service_seek", "job_offer", "job_seek",
@@ -473,6 +473,35 @@ def normalize_period(settings, period: str) -> dict[str, int]:
                     "emoji": "🛠️",
                 }
                 categories.append(service_category)
+                con.execute(
+                    "UPDATE classification_runs SET categories_json=? WHERE period_key=?",
+                    (json.dumps(categories, ensure_ascii=False), period),
+                )
+        if job_category is None:
+            possible_jobs = con.execute(
+                """SELECT m.source_text FROM entries e JOIN messages m ON m.id=e.message_id
+                   WHERE e.period_key=? AND e.eligible=1 AND e.excluded_reason IS NULL
+                     AND e.manual_category IS NULL
+                """,
+                (period,),
+            ).fetchall()
+            if any(
+                JOB_SEEK.search(row["source_text"])
+                or JOB_OFFER.search(row["source_text"])
+                for row in possible_jobs
+            ):
+                used_codes = {item.get("code") for item in categories}
+                code = "jobs"
+                suffix = 2
+                while code in used_codes:
+                    code = f"jobs_{suffix}"
+                    suffix += 1
+                job_category = {
+                    "code": code,
+                    "title": "Работа и вакансии",
+                    "emoji": "💼",
+                }
+                categories.append(job_category)
                 con.execute(
                     "UPDATE classification_runs SET categories_json=? WHERE period_key=?",
                     (json.dumps(categories, ensure_ascii=False), period),
