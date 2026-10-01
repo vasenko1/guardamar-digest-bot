@@ -630,9 +630,16 @@ def _ensure_editorial_categories(categories: list[dict], rows: list[dict]) -> tu
     """Ensure food and flowers have separate broad digest sections when needed."""
     has_food = any(FOOD.search(row["text"]) for row in rows)
     has_flowers = any(FLOWERS.search(row["text"]) for row in rows)
-    result = list(categories)
+    result = [
+        category for category in categories
+        if not (
+            has_food and has_flowers
+            and FOOD_CATEGORY.search(category["title"])
+            and FLOWER_CATEGORY.search(category["title"])
+        )
+    ]
+    changed = len(result) != len(categories)
     used = {category["code"] for category in result}
-    changed = False
 
     if has_food and not any(FOOD_CATEGORY.search(category["title"]) for category in result):
         code = "food"
