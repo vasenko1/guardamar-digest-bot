@@ -10,15 +10,16 @@ from .llm import (
     OTHER_LOCATION_ALIASES,
     REAL_ESTATE_SECTIONS,
     _compact_realestate_title,
+    _outside_location_names,
     _realestate_mode,
 )
 
 
-VERSION = "2026-08-03.6"
+VERSION = "2026-10-01.1"
 VALID_INTENTS = {
     "sale_offer", "purchase_seek", "giveaway", "rent_offer", "rent_seek",
     "service_offer", "service_seek", "job_offer", "job_seek",
-    "trip_offer", "other",
+    "trip_offer", "trip_seek", "other",
 }
 VALID_LOCATION_SCOPES = {"local", "outside", "mixed", "unspecified"}
 INTENT_SUBSECTIONS = {
@@ -32,6 +33,7 @@ INTENT_SUBSECTIONS = {
     "job_offer": "Требуется",
     "job_seek": "Ищу работу",
     "trip_offer": "Поездки и трансфер",
+    "trip_seek": "Ищу перевозку",
 }
 LOCAL_CITY = re.compile(
     r"(?:guardamar\s+del\s+segura|guardamar|"
@@ -85,6 +87,27 @@ SMM_OFFER = re.compile(
     r"reels|stories|продвижен\w*|беру\s+на\s+себя)\b",
     re.I | re.S,
 )
+CLIENT_WORK_OFFER = re.compile(
+    r"\b(?:дизайнер\w*|разработчик\w*|фотограф\w*|видеограф\w*|"
+    r"мастер\w*|специалист\w*)\b[^.!?\n]{0,140}"
+    r"\b(?:ищ\w*|шука\w*)\b[^.!?\n]{0,80}"
+    r"\b(?:заказ\w*|замовлен\w*|проект\w*|проєкт\w*|клиент\w*)\b",
+    re.I,
+)
+TRANSPORT_SEEK = re.compile(
+    r"\b(?:нужно|надо|потрібно)\s+передат\w*\b|"
+    r"\b(?:кто[- ]?то|кто\s+нибудь|хто[- ]?небудь).{0,100}"
+    r"\b(?:готов\w*\s+)?захват\w*\b|"
+    r"\bищ\w*\s+(?:перевозчик\w*|попутчик\w*)\b",
+    re.I | re.S,
+)
+ADOPTION_GIVEAWAY = re.compile(
+    r"\b(?:кот[её]н\w*|щен\w*)\b.*"
+    r"(?:\bищ\w*\s+(?:для\s+них\s+)?(?:семь\w*|дом\w*)|"
+    r"\b(?:добрые|хорошие|заботливые)\s+(?:и\s+\w+\s+)?руки\b|"
+    r"\bготов\w*\s+переехат\w*)",
+    re.I | re.S,
+)
 
 
 def _normalized(value: str) -> str:
@@ -102,10 +125,7 @@ def editorial_fingerprint(source: str, category: str, title: str, manual: str) -
 def infer_location(source: str, title: str) -> tuple[str, str | None]:
     combined = _normalized(f"{source}\n{title}").casefold()
     local = bool(LOCAL_CITY.search(combined))
-    outside_names = [
-        display for display, aliases in OTHER_LOCATION_ALIASES
-        if any(alias in combined for alias in aliases)
-    ]
+    outside_names = _outside_location_names(combined)
     if outside_names:
         scope = "mixed" if local or len(outside_names) > 1 else "outside"
         return scope, ", ".join(outside_names)
@@ -126,6 +146,8 @@ def infer_intent(category_title: str, source: str) -> str:
             return "job_seek"
         return "job_offer" if JOB_OFFER.search(source) else "other"
     if "транспорт" in category or "авто" in category:
+        if TRANSPORT_SEEK.search(source):
+            return "trip_seek"
         if RENT.search(source):
             return "rent_seek" if SEEK.search(source) else "rent_offer"
         if SELL.search(source) or re.search(r"\b(?:19|20)\d{2}\b", source):
@@ -134,6 +156,8 @@ def infer_intent(category_title: str, source: str) -> str:
             return "trip_offer"
         return "service_offer"
     if any(word in category for word in ("товар", "вещ", "одежд")):
+        if ADOPTION_GIVEAWAY.search(source):
+            return "giveaway"
         if RENT.search(source):
             return "rent_seek" if SEEK.search(source) else "rent_offer"
         if SELL.search(source) or PRICE.search(source):
@@ -144,13 +168,19 @@ def infer_intent(category_title: str, source: str) -> str:
             return "purchase_seek"
         return "sale_offer"
     if any(word in category for word in ("услуг", "красот", "здоров")):
-        if SMM_OFFER.search(source):
+        if SMM_OFFER.search(source) or CLIENT_WORK_OFFER.search(source):
             return "service_offer"
         return "service_seek" if SEEK.search(source) else "service_offer"
     return "other"
 
 
 def service_title(source: str, existing: str) -> str:
+    if re.search(r"\b(?:натуропат\w*|травник\w*)\b", source, re.I):
+        return "Консультация травника и натуропата"
+    if re.search(r"\bдизайнер\w*\b", source, re.I) and re.search(
+        r"\b(?:заказ\w*|замовлен\w*|проект\w*|проєкт\w*)\b", source, re.I
+    ):
+        return "Графический дизайн"
     if re.search(r"\bкондиционер|холодильн", source, re.I):
         return "Кондиционеры и холодильное оборудование"
     if re.search(r"\bокн\w*\b", source, re.I) and re.search(r"\bдвер\w*\b", source, re.I):
@@ -287,6 +317,12 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
         title = re.sub(r"^ваканси[ия]\s+", "", title, flags=re.I)
     elif intent == "job_seek":
         title = re.sub(r"^ищу\s+работу\s*", "", title, flags=re.I)
+    elif intent == "trip_seek":
+        if re.search(r"\bпосылк\w*\b", lowered):
+            if re.search(r"\bукраин\w*\b", lowered) and re.search(r"\bиспани\w*\b", lowered):
+                title = "Посылка из Украины в Испанию"
+            else:
+                title = "Передача посылки"
     elif intent == "rent_seek" and ("транспорт" in category.casefold() or "авто" in category.casefold()):
         title = "Автомобиль"
     elif intent == "rent_offer" and ("транспорт" in category.casefold() or "авто" in category.casefold()):
@@ -315,6 +351,8 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
             deduplicated_segments.append(segment)
     title = ", ".join(deduplicated_segments)
     title = title.strip(" ,;:–—-")
+    if title and re.match(r"[а-яё]", title):
+        title = title[0].upper() + title[1:]
     append_outside_location = bool(
         original_location and (
             original_title_has_location
