@@ -289,6 +289,7 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
             title = "Трансфер"
         service_templates = (
             (r"натуропат|травник", "Консультация травника и натуропата"),
+            (r"переводчик\w*.*(?:сопровожд|госучрежд|инстанц)", "Перевод и сопровождение"),
             (r"очищен\w*.*(?:бактери|микроб)|антибактериальн", "Антибактериальная обработка салона"),
             (r"пошив.*ремонт\s+одежд", "Пошив и ремонт одежды"),
             (r"разработк\w*.*(?:сайт|приложен)", "Разработка сайтов и приложений"),
@@ -308,7 +309,12 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
                 break
     if re.search(r"ед[аы]|цвет|букет|торт|десерт", category, re.I):
         if re.search(r"букет|цвет", lowered):
-            title = "Доставка букетов"
+            if re.search(r"достав\w*", lowered):
+                title = "Доставка букетов"
+            elif re.search(r"ручн\w*\s+р[ао]бот\w*", lowered):
+                title = "Букет ручной работы"
+            else:
+                title = "Букеты и цветы"
         elif re.search(r"торт|пирожн|десерт", lowered):
             title = "Торты и десерты"
     if intent == "service_offer":
@@ -338,7 +344,11 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
         if repaired_vehicle != title:
             title = repaired_vehicle
         elif not re.search(r"\b(?:19|20)\d{2}\b", source):
-            title = "Автомобили"
+            title = (
+                "Прокат авто и трансферы"
+                if re.search(r"\bтрансфер\w*", lowered)
+                else "Прокат автомобилей"
+            )
     title = LOCAL_CITY_IN_TITLE.sub("", title)
     for display, aliases in OTHER_LOCATION_ALIASES:
         for alias in sorted(aliases, key=len, reverse=True):
