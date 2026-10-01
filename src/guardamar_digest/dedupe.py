@@ -33,7 +33,7 @@ TOPIC_PATTERNS = {
     "car_rental": re.compile(r"\b(?:аренд\w*|прокат\w*)\s+(?:авто\w*|машин\w*)\b", re.I),
     "aircon": re.compile(r"\b(?:кондиционер\w*|воздуховод\w*|холодильн\w*)\b", re.I),
     "construction": re.compile(r"\b(?:ремонт\w*|строительн\w*|отделочн\w*|кухн\w*\s+под\s+заказ)\b", re.I),
-    "fitness_coach": re.compile(r"\b(?:фитнес[-\s]?тренер\w*|тренировк\w*)\b", re.I),
+    "fitness_coach": re.compile(r"\bфитнес[-\s]?тренер\w*\b", re.I),
     "naturopath": re.compile(r"\b(?:натуропат\w*|травник\w*)\b", re.I),
     "bodyshop_jobs": re.compile(
         r"\b(?:рихтовщик\w*|кузовщик\w*|автомаляр\w*|подготовщик\w*)\b", re.I
