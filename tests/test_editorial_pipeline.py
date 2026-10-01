@@ -2019,6 +2019,62 @@ class PipelineTest(unittest.TestCase):
             "Посылка из Украины в Испанию",
         )
 
+    def test_september_normalization_repairs_category_drift(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            designer = add_message(
+                con, 120,
+                "Junior дизайнер шукає перші замовлення та невеликі проєкти.",
+                "designer",
+            )
+            parcel = add_message(
+                con, 121,
+                "Нужно передать посылку из Украины в Испанию. "
+                "Если кто-то едет и готов захватить — отзовитесь.",
+                "traveler",
+            )
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='jobs',
+                   category_title='Работа и вакансии',category_emoji='💼',
+                   short_title='Ищу работу дизайнером',classification_run_id='run'
+                   WHERE message_id=?""",
+                (designer,),
+            )
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='services',
+                   category_title='Услуги и ремонт',category_emoji='🛠',
+                   short_title='Передача посылки',classification_run_id='run'
+                   WHERE message_id=?""",
+                (parcel,),
+            )
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run','sig',?,'complete')""",
+                (json.dumps([
+                    {"code": "jobs", "title": "Работа и вакансии", "emoji": "💼"},
+                    {"code": "services", "title": "Услуги и ремонт", "emoji": "🛠"},
+                    {"code": "transport", "title": "Транспорт и перевозки", "emoji": "🚗"},
+                ], ensure_ascii=False),),
+            )
+        result = normalize_period(settings, "2026-07")
+        self.assertGreaterEqual(result["category_repairs"], 2)
+        with connect(self.db) as con:
+            rows = {
+                row["message_id"]: row
+                for row in con.execute(
+                    """SELECT message_id,category_title,short_title,intent_code
+                       FROM entries WHERE message_id IN (?,?)""",
+                    (designer, parcel),
+                )
+            }
+        self.assertEqual(rows[designer]["category_title"], "Услуги и ремонт")
+        self.assertEqual(rows[designer]["intent_code"], "service_offer")
+        self.assertEqual(rows[designer]["short_title"], "Графический дизайн")
+        self.assertEqual(rows[parcel]["category_title"], "Транспорт и перевозки")
+        self.assertEqual(rows[parcel]["intent_code"], "trip_seek")
+        self.assertEqual(rows[parcel]["short_title"], "Посылка из Украины в Испанию")
+
     def test_september_naturopath_title_does_not_become_car_salon_cleaning(self):
         source = (
             "Я практикующий натуропат, травник. Воздействие на бактериальную флору. "
