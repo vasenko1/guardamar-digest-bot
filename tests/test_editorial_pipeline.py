@@ -2237,7 +2237,7 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(rows[service_seek]["intent_code"], "service_seek")
         self.assertEqual(
             rows[service_seek]["short_title"],
-            "Мастер по ремонту кондиционера",
+            "Кондиционеры и холодильное оборудование",
         )
 
     def test_september_naturopath_title_does_not_become_car_salon_cleaning(self):
