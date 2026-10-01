@@ -1176,13 +1176,22 @@ class PipelineTest(unittest.TestCase):
             )
         food, added = _ensure_editorial_categories([], [{"text": "Домашние торты"}])
         self.assertTrue(added)
-        self.assertEqual(food[0]["title"], "Еда и доставка")
+        self.assertEqual(food[0]["title"], "Еда и продукты")
         flowers, _ = _ensure_editorial_categories([], [{"text": "Доставка букетов"}])
         self.assertEqual(flowers[0]["title"], "Цветы и букеты")
         both, _ = _ensure_editorial_categories(
             [], [{"text": "Домашние торты"}, {"text": "Доставка букетов"}]
         )
-        self.assertEqual(both[0]["title"], "Еда и цветы")
+        self.assertEqual(
+            [item["title"] for item in both],
+            ["Еда и продукты", "Цветы и букеты"],
+        )
+        separated, changed = _ensure_editorial_categories(
+            [{"code": "food", "title": "Еда и продукты", "emoji": "🎂"}],
+            [{"text": "Продаю букет ручной работы"}],
+        )
+        self.assertTrue(changed)
+        self.assertEqual(separated[-1]["title"], "Цветы и букеты")
 
     def test_training_recruitment_is_not_forced_into_seek_title(self):
         source = (
@@ -1817,6 +1826,196 @@ class PipelineTest(unittest.TestCase):
                 "Ищу няню для двоих детей 1 и 5 лет, Ла-Марина",
             ),
             "Няня для детей 1 и 5 лет, Ла-Марина",
+        )
+
+    def test_september_source_channel_and_image_only_posts_are_prefiltered(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            channel_post = add_message(
+                con, 90,
+                "Последний день записи в детскую музыкальную группу Jardín Musical",
+                "channel1",
+            )
+            photo_only = add_message(con, 91, "Фото от Tatsiana", "seller")
+            handmade = add_message(
+                con, 92,
+                "Продаю за 50, можем договориться 45-40. РУЧНАЯ РОБОТА! По всем вопросам в лс",
+                "seller2",
+            )
+        result = prefilter(settings, "2026-07")
+        self.assertEqual(result["excluded_author"], 1)
+        self.assertEqual(result["excluded_incomplete"], 2)
+        with connect(self.db) as con:
+            reasons = {
+                row["message_id"]: row["excluded_reason"]
+                for row in con.execute(
+                    "SELECT message_id,excluded_reason FROM entries "
+                    "WHERE message_id IN (?,?,?)",
+                    (channel_post, photo_only, handmade),
+                )
+            }
+        self.assertEqual(reasons[channel_post], "author")
+        self.assertEqual(reasons[photo_only], "incomplete")
+        self.assertEqual(reasons[handmade], "incomplete")
+
+    def test_september_monthly_campaigns_collapse_without_broad_topic_merge(self):
+        pairs = (
+            (
+                "Всем привет! Я Максим, фитнес-тренер. Провожу индивидуальные и групповые тренировки.",
+                "Меня зовут Максим, я фитнес-тренер. Очные тренировки в зале и онлайн-тренировки.",
+                "same_author_fitness_coach_campaign",
+            ),
+            (
+                "Я Лидия, практикующий натуропат, травник. Консультация и программы очищения.",
+                "Лидия — сертифицированный травник, натуропат. Индивидуальные программы.",
+                "same_author_naturopath_campaign",
+            ),
+            (
+                "СТО: срочно требуется рихтовщик, кузовщик и автомаляр-подготовщик.",
+                "СТО требуется: рихтовщик-кузовщик, автомаляр-подготовщик.",
+                "same_author_bodyshop_jobs_campaign",
+            ),
+            (
+                "Предлагаю услуги по уходу за вашими близкими. Возможно с проживанием.",
+                "Ищу работу по уходу за вашими близкими. Возможно с проживанием.",
+                "same_author_caregiving_campaign",
+            ),
+            (
+                "Бенто-торт и пирожные Павлова, доставка.",
+                "Медовик, Наполеон, пирожные Павлова и чизкейки, доставка.",
+                "same_author_bakery_campaign",
+            ),
+        )
+        for left, right, reason in pairs:
+            decision = _deterministic_arbitration(
+                {"source_text": left, "sender_id": "same-author"},
+                {"source_text": right, "sender_id": "same-author"},
+            )
+            self.assertEqual(decision, ("same", reason, "high"))
+
+        distinct = _deterministic_arbitration(
+            {
+                "source_text": "Сдается квартира с кондиционером у моря",
+                "sender_id": "same-author",
+            },
+            {
+                "source_text": "Установка и ремонт кондиционеров",
+                "sender_id": "same-author",
+            },
+        )
+        self.assertEqual(distinct[0], "different")
+
+    def test_september_realestate_beats_aircon_and_long_term_beats_move_in_date(self):
+        studio = (
+            "Аренда Длительная / Посуточная. Torrevieja | Playa de Los Locos. "
+            "Современная студия на первой линии моря. Кондиционер. "
+            "При аренде длительно 650 евро/месяц."
+        )
+        self.assertEqual(_realestate_mode(studio), "rent_offer")
+        self.assertEqual(
+            _compact_realestate_title(studio),
+            "Студия, длительно, Торревьеха",
+        )
+        family_seek = (
+            "Ищу квартиру в Guardamar del Segura для семьи на зимний период "
+            "или длительный срок. Нужна квартира минимум с двумя спальнями, "
+            "заезд 16–17 сентября."
+        )
+        self.assertEqual(
+            _compact_realestate_title(family_seek),
+            "Квартиру, 2 спальни, длительно",
+        )
+
+    def test_september_alicante_province_is_not_a_false_outside_city(self):
+        guardamar_flat = (
+            "Долгосрочная аренда квартиры. "
+            "Guardamar del Segura, Alicante. 3 спальни."
+        )
+        self.assertEqual(infer_location(guardamar_flat, "Квартира, длительно"), ("local", None))
+        hairdresser = (
+            "Парикмахер-стилист. Локация: Гуардамар-дель-Сегура, "
+            "провинция Аликанте."
+        )
+        self.assertEqual(infer_location(hairdresser, "Стрижка и окрашивание"), ("local", None))
+        santa_pola = (
+            "Аренда бунгало. 📍 Санта-Пола в 300 м от пляжа. #SantaPola #Alicante"
+        )
+        scope, location = infer_location(santa_pola, "Бунгало, посуточно")
+        self.assertEqual(scope, "outside")
+        self.assertEqual(location, "Санта-Пола")
+
+    def test_september_intent_repairs_for_adoption_clients_and_parcel(self):
+        kittens = (
+            "У нас подрастают котята. Мы ищем для них ответственные и добрые семьи. "
+            "Только в хорошие и заботливые руки."
+        )
+        self.assertEqual(
+            infer_intent("Товары для дома и личное", kittens),
+            "giveaway",
+        )
+        designer = (
+            "Junior дизайнер шукає перші замовлення. "
+            "Можу працювати над банерами, логотипами та дизайном для соцмереж."
+        )
+        self.assertEqual(
+            infer_intent("Услуги и ремонт", designer),
+            "service_offer",
+        )
+        self.assertEqual(
+            normalize_title(
+                "service_offer", "Услуги и ремонт", designer,
+                "Услуги начинающего дизайнера",
+            ),
+            "Графический дизайн",
+        )
+        parcel = (
+            "Нужно передать из Украины в Испанию 1 литр удобрения. "
+            "Если кто-то едет и готов захватить — отзовитесь."
+        )
+        self.assertEqual(
+            infer_intent("Транспорт и перевозки", parcel),
+            "trip_seek",
+        )
+        self.assertEqual(
+            normalize_title(
+                "trip_seek", "Транспорт и перевозки", parcel,
+                "Передача посылки из Украины в Испанию",
+            ),
+            "Посылка из Украины в Испанию",
+        )
+
+    def test_september_naturopath_title_does_not_become_car_salon_cleaning(self):
+        source = (
+            "Я практикующий натуропат, травник. Воздействие на бактериальную флору. "
+            "Составляю протокол и записываю на консультацию."
+        )
+        self.assertEqual(
+            normalize_title(
+                "service_offer", "Красота и здоровье", source,
+                "Антибактериальная обработка салона",
+            ),
+            "Консультация травника и натуропата",
+        )
+
+    def test_september_flowers_must_not_stay_in_food_category(self):
+        with self.assertRaisesRegex(ValueError, "flowers assigned outside"):
+            _validate_category_assignment(
+                "Продаю букет ручной работы",
+                "Еда и продукты",
+            )
+        _validate_category_assignment(
+            "Продаю букет ручной работы",
+            "Цветы и букеты",
+        )
+
+    def test_transport_request_gets_own_subsection(self):
+        self.assertEqual(
+            _intent_subsection(
+                "Транспорт и перевозки",
+                "Нужно передать посылку из Украины в Испанию. "
+                "Если кто-то едет и готов захватить — отзовитесь.",
+            ),
+            "Ищу перевозку",
         )
 
     def test_render_nests_realestate_intent_subsections(self):
