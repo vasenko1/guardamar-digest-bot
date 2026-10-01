@@ -2172,7 +2172,7 @@ class PipelineTest(unittest.TestCase):
             )
             service_seek = add_message(
                 con, 142,
-                "Требуется мастер по ремонту кондиционера.",
+                "Ищу мастера по ремонту кондиционера.",
                 "customer",
             )
             for message_id, title in (
