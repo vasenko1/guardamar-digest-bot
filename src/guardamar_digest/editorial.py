@@ -15,7 +15,7 @@ from .llm import (
 )
 
 
-VERSION = "2026-10-01.4"
+VERSION = "2026-10-01.5"
 VALID_INTENTS = {
     "sale_offer", "purchase_seek", "giveaway", "rent_offer", "rent_seek",
     "service_offer", "service_seek", "job_offer", "job_seek",
@@ -120,6 +120,12 @@ ADOPTION_GIVEAWAY = re.compile(
     r"\bготов\w*\s+переехат\w*)",
     re.I | re.S,
 )
+HEALTH_PRODUCT_SALE = re.compile(
+    r"\b(?:препарат\w*|лекарств\w*|таблет\w*|капсул\w*|блистер\w*|"
+    r"[еэ]тацизин\w*|ритмонорм\w*)\b",
+    re.I,
+)
+
 EDUCATION_OFFER = re.compile(
     r"\b(?:курс\w*\s+(?:испанск\w*|іспанськ\w*)|"
     r"репетитор\w*\s+по\s+(?:испанск\w*|іспанськ\w*)|"
@@ -187,7 +193,8 @@ def infer_intent(category_title: str, source: str) -> str:
             return "purchase_seek"
         return "sale_offer"
     if any(word in category for word in ("услуг", "красот", "здоров")):
-        if SELL.search(source):
+        is_health = "красот" in category or "здоров" in category
+        if is_health and SELL.search(source) and HEALTH_PRODUCT_SALE.search(source):
             return "sale_offer"
         if SMM_OFFER.search(source) or CLIENT_WORK_OFFER.search(source):
             return "service_offer"
