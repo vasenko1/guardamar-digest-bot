@@ -1197,10 +1197,22 @@ class PipelineTest(unittest.TestCase):
             ),
             "Обучение маркетингу и SMM",
         )
+        self.assertEqual(
+            _validate_showcase_title(
+                "Стажировка по маркетингу",
+                "Ищу кандидата, которого мы готовы обучить маркетингу с нуля",
+            ),
+            "Стажировка по маркетингу",
+        )
         with self.assertRaisesRegex(ValueError, "request into an offer"):
             _validate_showcase_title(
                 "Обучение SMM",
                 "Ищу девушку, которая обучит меня SMM",
+            )
+        with self.assertRaisesRegex(ValueError, "request into an offer"):
+            _validate_showcase_title(
+                "Обучение маркетингу",
+                "Ищу кандидата, который обучит нашу команду маркетингу",
             )
         with self.assertRaisesRegex(ValueError, "request into an offer"):
             _validate_showcase_title(
