@@ -175,6 +175,8 @@ def infer_intent(category_title: str, source: str) -> str:
 
 
 def service_title(source: str, existing: str) -> str:
+    if re.search(r"\bфитнес[-\s]?тренер\w*|\bфитнес[-\s]?трениров\w*", source, re.I):
+        return "Фитнес-тренировки"
     if re.search(r"\b(?:натуропат\w*|травник\w*)\b", source, re.I):
         return "Консультация травника и натуропата"
     if re.search(r"\bдизайнер\w*\b", source, re.I) and re.search(
@@ -270,6 +272,11 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
             title = "Сотрудник на кухню"
         elif re.search(r"\bнян\w*\b", lowered) and intent == "job_offer":
             title = "Няня для детей 1 и 5 лет"
+        elif intent == "job_seek" and re.search(
+            r"\bуход\w*\s+за\s+(?:вашими\s+)?(?:близк\w*|пожил\w*)\b",
+            lowered,
+        ):
+            title = "Уход за пожилыми и близкими"
         elif intent == "job_seek":
             title = "Полная или частичная занятость"
     is_transport = "транспорт" in category.casefold() or "авто" in category.casefold()
