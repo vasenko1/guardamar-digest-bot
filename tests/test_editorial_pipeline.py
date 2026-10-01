@@ -1129,7 +1129,7 @@ class PipelineTest(unittest.TestCase):
             ),
             "Поездка Торревьеха — Валенсия 3 августа",
         )
-        with self.assertRaisesRegex(ValueError, "outside their digest section"):
+        with self.assertRaisesRegex(ValueError, "food assigned outside its digest section"):
             _validate_category_assignment("Домашние торты", "Товары")
         _validate_category_assignment("Домашние торты", "Еда и цветы")
         _validate_category_assignment("Установка розеток", "Бытовые услуги")
