@@ -15,7 +15,7 @@ from .llm import (
 )
 
 
-VERSION = "2026-10-01.1"
+VERSION = "2026-10-01.2"
 VALID_INTENTS = {
     "sale_offer", "purchase_seek", "giveaway", "rent_offer", "rent_seek",
     "service_offer", "service_seek", "job_offer", "job_seek",
@@ -326,7 +326,13 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
     elif intent == "purchase_seek":
         title = re.sub(r"^(?:ищу|куплю|покупка)\s+", "", title, flags=re.I)
     elif intent == "giveaway":
-        title = re.sub(r"^(?:отдам|віддам)(?:\s+бесплатно)?\s+", "", title, flags=re.I)
+        if ADOPTION_GIVEAWAY.search(source):
+            if re.search(r"\b(?:кот[её]н\w*|котят\w*)\b", source, re.I):
+                title = "Котята в добрые руки"
+            elif re.search(r"\bщен\w*\b", source, re.I):
+                title = "Щенки в добрые руки"
+        else:
+            title = re.sub(r"^(?:отдам|віддам)(?:\s+бесплатно)?\s+", "", title, flags=re.I)
     elif intent == "job_offer":
         title = re.sub(r"^ваканси[ия]\s+", "", title, flags=re.I)
     elif intent == "job_seek":
@@ -420,6 +426,13 @@ def normalize_period(settings, period: str) -> dict[str, int]:
             ),
             None,
         )
+        job_category = next(
+            (
+                item for item in categories
+                if re.search(r"работ|ваканси", item.get("title", ""), re.I)
+            ),
+            None,
+        )
         if service_category is None:
             possible_services = con.execute(
                 """SELECT m.source_text FROM entries e JOIN messages m ON m.id=e.message_id
@@ -500,6 +513,20 @@ def normalize_period(settings, period: str) -> dict[str, int]:
                 category_title = transport_category["title"]
                 category_emoji = transport_category.get("emoji", "🚗")
                 reason = "transport request moved to transport category"
+                counts["category_repairs"] += 1
+            if (
+                row["manual_category"] is None
+                and job_category
+                and not re.search(r"работ|ваканси", category_title, re.I)
+                and (
+                    JOB_SEEK.search(row["source_text"])
+                    or JOB_OFFER.search(row["source_text"])
+                )
+            ):
+                category_code = job_category["code"]
+                category_title = job_category["title"]
+                category_emoji = job_category.get("emoji", "💼")
+                reason = "explicit job intent moved to jobs category"
                 counts["category_repairs"] += 1
             if (
                 row["manual_category"] is None
