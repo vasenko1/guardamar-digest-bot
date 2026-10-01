@@ -405,7 +405,7 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
         ):
             title = "Трансфер по Испании, Торревьеха"
         elif re.search(r"\bаэропорт\w*|\baeropuerto\w*|\bаеропорт\w*", lowered) and re.search(
-            r"\b(?:между\s+город|між\s+міст|поездк\w*\s+между\s+город)\b", lowered
+            r"\b(?:между\s+город\w*|між\s+міст\w*|поездк\w*\s+между\s+город\w*)\b", lowered
         ):
             title = "Трансфер в аэропорты и между городами"
     elif intent == "trip_seek":
