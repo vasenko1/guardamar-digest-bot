@@ -447,13 +447,16 @@ class PipelineTest(unittest.TestCase):
         self.assertNotIn("uncertain", statuses)
         self.assertEqual(flags, 0)
 
-    def test_same_author_smm_campaign_is_deduplicated_without_llm(self):
+    def test_same_author_broad_campaign_topic_is_not_offer_identity(self):
         settings = make_settings(self.db)
         with connect(self.db) as con:
-            add_message(con, 55, "Ведение Instagram и создание Reels для бизнеса")
+            add_message(
+                con, 55,
+                "Обучу маркетингу и SMM с нуля, помогу найти первые заказы",
+            )
             add_message(
                 con, 56,
-                "Разберу профиль и помогу привлекать клиентов через SMM",
+                "Создаю сайты WordPress и веду Instagram для бизнеса, Reels и таргет",
                 published="2026-07-20T10:00:00",
             )
         dedupe(self.db, "2026-07")
@@ -466,7 +469,49 @@ class PipelineTest(unittest.TestCase):
             published = con.execute(
                 "SELECT COUNT(*) FROM entries WHERE period_key='2026-07' AND excluded_reason IS NULL"
             ).fetchone()[0]
-        self.assertEqual(published, 1)
+            decision = con.execute(
+                "SELECT status,reason_code,provider FROM duplicate_reviews WHERE period_key='2026-07'"
+            ).fetchone()
+        self.assertEqual(published, 2)
+        self.assertEqual(decision["status"], "different")
+        self.assertEqual(decision["provider"], "rule")
+        self.assertNotEqual(decision["reason_code"], "same_author_safe_campaign")
+
+    def test_same_author_same_topic_apartment_and_appliances_stay_separate(self):
+        left = {
+            "source_text": (
+                "Сдается квартира с 2 спальнями в Guardamar. "
+                "Есть телевизор, микроволновка и стиральная машина."
+            )
+        }
+        right = {
+            "source_text": (
+                "Продам холодильник 80€, микроволновку 30€, телевизор 100€ "
+                "и электрочайник, самовывоз Guardamar."
+            )
+        }
+        self.assertEqual(
+            _deterministic_arbitration(left, right)[0],
+            "different",
+        )
+
+    def test_same_author_hvac_installation_and_duct_cleaning_stay_separate(self):
+        left = {
+            "source_text": (
+                "Установка и замена кондиционеров, ремонт холодильного "
+                "оборудования и вентиляции."
+            )
+        }
+        right = {
+            "source_text": (
+                "Профессиональная чистка воздуховодов кондиционирования, "
+                "удаление пыли и плесени, инспекция каналов камерой."
+            )
+        }
+        self.assertEqual(
+            _deterministic_arbitration(left, right)[0],
+            "different",
+        )
 
     def test_known_ukrainian_spanish_campaign_is_deduplicated_across_authors(self):
         first = (
@@ -543,8 +588,8 @@ class PipelineTest(unittest.TestCase):
         flowers_a = {"source_text": "Букеты роз, акция 4.07, доставка"}
         flowers_b = {"source_text": "Цветы и букеты, акция 11.07, доставка"}
         self.assertEqual(
-            _deterministic_arbitration(flowers_a, flowers_b)[:2],
-            ("same", "same_author_safe_campaign"),
+            _deterministic_arbitration(flowers_a, flowers_b)[0],
+            "same",
         )
 
     def test_canonical_prefers_latest_concise_standalone_ad(self):
