@@ -196,6 +196,14 @@ def infer_intent(category_title: str, source: str) -> str:
 
 
 def service_title(source: str, existing: str) -> str:
+    if re.search(r"\b(?:sound[-\s]?инженер\w*|звукорежисс\w*)\b", source, re.I) and re.search(
+        r"\bмузыкальн\w*\s+продюсер\w*\b", source, re.I
+    ):
+        return "Звукорежиссура и музыкальное продюсирование"
+    if re.search(r"\bбилет\w*\b", source, re.I) and re.search(
+        r"\b(?:бенидорм\w*|terra\s+m[ií]tica|aqualandia|mundomar)\b", source, re.I
+    ):
+        return "Билеты в парки Бенидорма"
     if re.search(r"\bвоздуховод\w*\b", source, re.I) and re.search(
         r"\b(?:чистк\w*|изготовлен\w*)\b", source, re.I
     ):
@@ -396,7 +404,7 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
             r"\b(?:іспані|испани)\w*\b", lowered
         ):
             title = "Трансфер по Испании, Торревьеха"
-        elif re.search(r"\bаэропорт\w*|\baeropuerto\w*|\baеропорт\w*", lowered) and re.search(
+        elif re.search(r"\bаэропорт\w*|\baeropuerto\w*|\bаеропорт\w*", lowered) and re.search(
             r"\b(?:между\s+город|між\s+міст|поездк\w*\s+между\s+город)\b", lowered
         ):
             title = "Трансфер в аэропорты и между городами"
