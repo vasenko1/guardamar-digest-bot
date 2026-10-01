@@ -2032,6 +2032,48 @@ class PipelineTest(unittest.TestCase):
             "Консультация травника и натуропата",
         )
 
+    def test_september_display_templates_for_campaign_keepers(self):
+        self.assertEqual(
+            normalize_title(
+                "service_offer",
+                "Красота и здоровье",
+                "Я фитнес-тренер. Очные тренировки в Торревьехе и онлайн.",
+                "фитнес-тренера, Торревьеха",
+            ),
+            "Фитнес-тренировки, Торревьеха",
+        )
+        self.assertEqual(
+            normalize_title(
+                "service_offer",
+                "Услуги и ремонт",
+                "Услуги переводчика и личное сопровождение в госучреждениях.",
+                "переводчика и сопровождение в госучреждениях",
+            ),
+            "Перевод и сопровождение",
+        )
+        self.assertEqual(
+            normalize_title(
+                "sale_offer",
+                "Цветы и букеты",
+                "Продаю букет ручной работы, возможен торг.",
+                "Доставка букетов",
+            ),
+            "Букет ручной работы",
+        )
+        fleet = (
+            "Аренда авто и трансферы: Ford Focus, BMW 120, Mini Cooper. "
+            "Доставка авто в аэропорты и города."
+        )
+        self.assertEqual(
+            normalize_title(
+                "rent_offer",
+                "Транспорт и перевозки",
+                fleet,
+                "Автомобили",
+            ),
+            "Прокат авто и трансферы",
+        )
+
     def test_september_flowers_must_not_stay_in_food_category(self):
         with self.assertRaisesRegex(ValueError, "flowers assigned outside"):
             _validate_category_assignment(
