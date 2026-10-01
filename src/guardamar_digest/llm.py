@@ -509,7 +509,7 @@ def _realestate_object(source_text: str, seek: bool) -> str:
 def _realestate_term(source_text: str) -> str | None:
     if re.search(
         r"\b(?:долгосрочн\w*|длительн\w*|долг\w*\s+срок|"
-        r"зимн\w*\s+период|на\s+весь\s+год|на\s+год)\b",
+        r"зимн\w*\s+период|довг\w*\s+термін|на\s+весь\s+год|на\s+год)\b",
         source_text,
         re.I,
     ):
@@ -532,6 +532,8 @@ def _realestate_term(source_text: str) -> str | None:
         return f"{same_month.group(1)}–{same_month.group(2)} {same_month.group(3).lower()}"
     if re.search(r"\b(?:посуточн\w*|на\s+сутки)\b", source_text, re.I):
         return "посуточно"
+    if re.search(r"\bкраткосрочн\w*\b", source_text, re.I):
+        return "краткосрочно"
     return None
 
 
