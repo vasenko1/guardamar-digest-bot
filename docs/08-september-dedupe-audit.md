@@ -103,10 +103,11 @@ Rules introduced by the correction pass:
 - classifier version 2026-10-01.2 separates flowers from food, strengthens rental
   recognition across descriptive punctuation and treats Alicante province context
   separately from Alicante city;
-- editorial version 2026-10-01.2 adds intent rules for client-order seeking,
-  transport requests and pet adoption, repairs explicit job offers/job seekers back
-  into the jobs category, and uses stable titles for naturopath, fitness, caregiving,
-  translator, flowers, car rental and adoption entries;
+- editorial version 2026-10-01.3 adds intent rules for client-order seeking,
+  transport requests and pet adoption, creates a broad jobs category when the LLM
+  plan omitted it but explicit job offers/job seekers exist, repairs those entries
+  into jobs, and uses stable titles for naturopath, fitness, caregiving, translator,
+  flowers, car rental and adoption entries;
 - transport requests render under their own subsection "Ищу перевозку".
 
 Explicit non-goal:
