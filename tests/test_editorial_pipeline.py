@@ -1500,7 +1500,7 @@ class PipelineTest(unittest.TestCase):
                     (title, message_id),
                 )
         response = {"candidates": [{"content": {"parts": [{"text":
-            '{"entries":[{"id":2,"include":true,"category":"food_flowers",'
+            '{"entries":[{"id":2,"include":true,"category":"food",'
             '"title":"Домашние торты и пирожные","confidence":"high"}]}'
         }]}}]}
         with patch("guardamar_digest.llm._post", return_value=response) as post:
@@ -1517,10 +1517,10 @@ class PipelineTest(unittest.TestCase):
             [dict(row) for row in rows],
             [
                 {"short_title": "Стул IKEA", "category_title": "Товары"},
-                {"short_title": "Торты и десерты", "category_title": "Еда и доставка"},
+                {"short_title": "Торты и десерты", "category_title": "Еда и продукты"},
             ],
         )
-        self.assertIn('"title": "Еда и доставка"', run["categories_json"])
+        self.assertIn('"title": "Еда и продукты"', run["categories_json"])
         self.assertEqual(run["status"], "complete")
 
     def test_changed_month_input_reuses_unchanged_classification_checkpoints(self):
@@ -1723,7 +1723,7 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("<b>Продажа</b>\n• Стул", output)
         self.assertIn("<b>Куплю</b>\n• Автокресло", output)
         self.assertIn("<b>Отдам</b>\n• Духовка", output)
-        self.assertIn("<b>Сдам в аренду</b>\n• Автомобили", output)
+        self.assertIn("<b>Сдам в аренду</b>\n• Прокат автомобилей", output)
         self.assertIn("<b>Сниму в аренду</b>\n• Автомобиль", output)
         self.assertIn("<b>Поездки и трансфер</b>\n• Трансфер", output)
         self.assertIn("<b>Требуется</b>\n• Помощник на кухню", output)
