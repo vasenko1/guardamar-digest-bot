@@ -12,7 +12,7 @@ from .db import connect
 from .llm import _json, _post
 
 
-VERSION = "2026-10-01.3"
+VERSION = "2026-10-01.4"
 _blocked_providers: set[str] = set()
 
 
@@ -33,7 +33,17 @@ TOPIC_PATTERNS = {
     "car_rental": re.compile(r"\b(?:аренд\w*|прокат\w*)\s+(?:авто\w*|машин\w*)\b", re.I),
     "aircon": re.compile(r"\b(?:кондиционер\w*|воздуховод\w*|холодильн\w*)\b", re.I),
     "construction": re.compile(r"\b(?:ремонт\w*|строительн\w*|отделочн\w*|кухн\w*\s+под\s+заказ)\b", re.I),
+    "fitness_coach": re.compile(r"\b(?:фитнес[-\s]?тренер\w*|тренировк\w*)\b", re.I),
+    "naturopath": re.compile(r"\b(?:натуропат\w*|травник\w*)\b", re.I),
+    "bodyshop_jobs": re.compile(
+        r"\b(?:рихтовщик\w*|кузовщик\w*|автомаляр\w*|подготовщик\w*)\b", re.I
+    ),
+    "caregiving": re.compile(
+        r"\bуход\w*\s+за\s+(?:вашими\s+)?(?:близк\w*|пожил\w*)\b", re.I
+    ),
+    "laptop": re.compile(r"\bноутбук\w*\b", re.I),
 }
+EUR_PRICE = re.compile(r"(?<!\d)(\d{2,5})\s*(?:€|евро\b|eur\b)", re.I)
 SAFE_CAMPAIGN_TOPICS = {
     "smm", "spanish_lessons", "bakery", "flowers", "aircon", "construction",
 }
@@ -93,6 +103,23 @@ def similarity(left: str, right: str) -> float:
 
 def _commercial_topics(text: str) -> set[str]:
     return {name for name, pattern in TOPIC_PATTERNS.items() if pattern.search(text)}
+
+
+def _euro_prices(text: str) -> set[str]:
+    return {value for value in EUR_PRICE.findall(text)}
+
+
+def _same_author_campaign_reason(left: str, right: str) -> str | None:
+    """High-precision monthly campaign identities observed in real Guardamar data."""
+    common_topics = _commercial_topics(left) & _commercial_topics(right)
+    for topic in (
+        "fitness_coach", "naturopath", "bodyshop_jobs", "caregiving", "bakery"
+    ):
+        if topic in common_topics:
+            return f"same_author_{topic}_campaign"
+    if "laptop" in common_topics and (_euro_prices(left) & _euro_prices(right)):
+        return "same_author_same_product_price"
+    return None
 
 
 SPANISH_SCHOOL_BASE = re.compile(r"\b(?:испанск\w*|іспанськ\w*)\b", re.I)
@@ -495,13 +522,17 @@ def _route_features(text: str) -> set[tuple[str, str]]:
 def _deterministic_arbitration(left: object, right: object) -> tuple[str, str, str]:
     """Always produce a conservative-but-complete same/different decision."""
     a, b = left["source_text"], right["source_text"]
+    sender_a = _row_value(left, "sender_id")
+    sender_b = _row_value(right, "sender_id")
+    if sender_a and sender_a == sender_b:
+        campaign_reason = _same_author_campaign_reason(a, b)
+        if campaign_reason:
+            return "same", campaign_reason, "high"
     intent_a, intent_b = _intent(a), _intent(b)
     if {intent_a, intent_b} == {"offer", "search"}:
         return "different", "intent_conflict", "high"
     school_a = _spanish_campaign_features(a)
     school_b = _spanish_campaign_features(b)
-    sender_a = _row_value(left, "sender_id")
-    sender_b = _row_value(right, "sender_id")
     if school_a and school_b and sender_a and sender_a == sender_b:
         return "same", "same_author_spanish_school_campaign", "high"
     if _same_cross_author_spanish_campaign(a, b):
@@ -748,7 +779,10 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
         hard_rule = rule_reason in {
             "intent_conflict", "explicit_date_conflict", "explicit_route_conflict",
             "explicit_vehicle_conflict", "explicit_bedroom_conflict",
-            "broad_topic_low_overlap", "same_author_spanish_school_campaign",
+            "broad_topic_low_overlap", "same_author_fitness_coach_campaign",
+            "same_author_naturopath_campaign", "same_author_bodyshop_jobs_campaign",
+            "same_author_caregiving_campaign", "same_author_bakery_campaign",
+            "same_author_same_product_price", "same_author_spanish_school_campaign",
             "cross_author_spanish_school_campaign",
         }
         if hard_rule:
