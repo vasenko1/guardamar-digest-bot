@@ -2075,6 +2075,88 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(rows[parcel]["intent_code"], "trip_seek")
         self.assertEqual(rows[parcel]["short_title"], "Посылка из Украины в Испанию")
 
+    def test_september_jobs_and_adoption_are_repaired_without_invented_roles(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            bodyshop = add_message(
+                con, 130,
+                "СТО требуется: рихтовщик-кузовщик, автомаляр-подготовщик.",
+                "garage",
+            )
+            caregiver = add_message(
+                con, 131,
+                "Ищу работу по уходу за пожилыми и близкими. Возможно с проживанием.",
+                "caregiver",
+            )
+            kittens = add_message(
+                con, 132,
+                "У нас подрастают котята. Ищем для них ответственные семьи. "
+                "Только в хорошие и заботливые руки.",
+                "cats",
+            )
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='services',
+                   category_title='Услуги и ремонт',category_emoji='🛠',
+                   short_title='Требуется рихтовщик-кузовщик и автомаляр',
+                   classification_run_id='run'
+                   WHERE message_id=?""",
+                (bodyshop,),
+            )
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='services',
+                   category_title='Услуги и ремонт',category_emoji='🛠',
+                   short_title='Уход за пожилыми людьми, возможно с проживанием',
+                   classification_run_id='run'
+                   WHERE message_id=?""",
+                (caregiver,),
+            )
+            con.execute(
+                """UPDATE entries SET eligible=1,category_code='goods',
+                   category_title='Товары и вещи',category_emoji='🛍',
+                   short_title='Продажа котят',classification_run_id='run'
+                   WHERE message_id=?""",
+                (kittens,),
+            )
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run','sig',?,'complete')""",
+                (json.dumps([
+                    {"code": "jobs", "title": "Работа и вакансии", "emoji": "💼"},
+                    {"code": "services", "title": "Услуги и ремонт", "emoji": "🛠"},
+                    {"code": "goods", "title": "Товары и вещи", "emoji": "🛍"},
+                ], ensure_ascii=False),),
+            )
+        result = normalize_period(settings, "2026-07")
+        self.assertGreaterEqual(result["category_repairs"], 2)
+        with connect(self.db) as con:
+            rows = {
+                row["message_id"]: row
+                for row in con.execute(
+                    """SELECT message_id,category_title,short_title,intent_code
+                       FROM entries WHERE message_id IN (?,?,?)""",
+                    (bodyshop, caregiver, kittens),
+                )
+            }
+
+        self.assertEqual(rows[bodyshop]["category_title"], "Работа и вакансии")
+        self.assertEqual(rows[bodyshop]["intent_code"], "job_offer")
+        self.assertEqual(
+            rows[bodyshop]["short_title"],
+            "Рихтовщик, кузовщик, автомаляр, подготовщик",
+        )
+        self.assertNotIn("Сварщик", rows[bodyshop]["short_title"])
+
+        self.assertEqual(rows[caregiver]["category_title"], "Работа и вакансии")
+        self.assertEqual(rows[caregiver]["intent_code"], "job_seek")
+        self.assertEqual(
+            rows[caregiver]["short_title"],
+            "Уход за пожилыми и близкими",
+        )
+
+        self.assertEqual(rows[kittens]["intent_code"], "giveaway")
+        self.assertEqual(rows[kittens]["short_title"], "Котята в добрые руки")
+
     def test_september_naturopath_title_does_not_become_car_salon_cleaning(self):
         source = (
             "Я практикующий натуропат, травник. Воздействие на бактериальную флору. "
