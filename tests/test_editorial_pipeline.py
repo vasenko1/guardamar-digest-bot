@@ -1902,6 +1902,32 @@ class PipelineTest(unittest.TestCase):
             )
             self.assertEqual(decision, ("same", reason, "high"))
 
+        laptop_update = _deterministic_arbitration(
+            {
+                "source_text": "Новый ноутбук HP 17 дюймов, цена 300 €",
+                "sender_id": "same-author",
+            },
+            {
+                "source_text": "Продается новый ноутбук 300 евро, кресло 40 евро",
+                "sender_id": "same-author",
+            },
+        )
+        self.assertEqual(
+            laptop_update,
+            ("same", "same_author_same_product_price", "high"),
+        )
+        different_laptops = _deterministic_arbitration(
+            {
+                "source_text": "Ноутбук HP 17 дюймов, 300 €",
+                "sender_id": "same-author",
+            },
+            {
+                "source_text": "Ноутбук Lenovo 15 дюймов, 450 €",
+                "sender_id": "same-author",
+            },
+        )
+        self.assertEqual(different_laptops[0], "different")
+
         distinct = _deterministic_arbitration(
             {
                 "source_text": "Сдается квартира с кондиционером у моря",
