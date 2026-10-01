@@ -192,6 +192,21 @@ def service_title(source: str, existing: str) -> str:
     return existing
 
 
+def bodyshop_job_title(source: str, existing: str) -> str:
+    roles = []
+    role_patterns = (
+        ("Рихтовщик", r"\bрихтовщик\w*\b"),
+        ("Кузовщик", r"\bкузовщик\w*\b"),
+        ("Сварщик", r"\bсварщик\w*\b"),
+        ("Автомаляр", r"\bавтомаляр\w*\b"),
+        ("Подготовщик", r"\b(?:авто)?подготовщик\w*\b"),
+    )
+    for label, pattern in role_patterns:
+        if re.search(pattern, source, re.I):
+            roles.append(label)
+    return ", ".join(roles) if roles else existing
+
+
 def vehicle_title(source: str, existing: str) -> str:
     identities = re.findall(
         r"\b(audi|bmw|chevrolet|citro[eë]n|fiat|ford|honda|hyundai|kia|"
@@ -264,8 +279,8 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
         elif re.search(r"іспанськ|испанск", lowered) and re.search(r"онлайн", lowered):
             title = "Испанский язык онлайн"
     if "работ" in category.casefold() or "ваканси" in category.casefold():
-        if re.search(r"рихтовщик|кузовщик|сварщик", lowered):
-            title = "Рихтовщик, кузовщик, сварщик, подготовщик"
+        if re.search(r"рихтовщик|кузовщик|сварщик|автомаляр|подготовщик", lowered):
+            title = bodyshop_job_title(source, title)
         elif re.search(r"помощник\w*\s+по\s+кухн", lowered):
             title = "Помощник на кухню"
         elif re.search(r"сотрудник\w*\s+на\s+кухн", lowered):
