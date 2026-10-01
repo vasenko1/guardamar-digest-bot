@@ -53,3 +53,19 @@ Tests cover:
 No raw September data must be re-imported. Re-running `dedupe --period 2026-09 --semantic`
 with the new rule version reopens non-manual prior decisions and rebuilds duplicate
 clusters from the preserved 411 raw entries.
+
+## Multi-account Spanish school
+
+The same September export also showed a separate requirement: one Spanish-language
+school advertises through multiple Telegram accounts and rewrites the copy heavily.
+A real-data fingerprint identified 36 school advertisements across eight accounts.
+Rare linking markers include the 1 € lecture course, Wednesday/Friday 20:00 schedule,
+356–459 UAH mini-group pricing, 50%/30% format discounts, A0–C1/C2 levels,
+modern-learning/platform language, free trial and repeated course-format catalogues.
+
+From dedupe version 2026-10-01.2:
+- different course formats from the same evidenced school account collapse to one school campaign;
+- cross-account school ads collapse only when they share strong rare campaign markers;
+- generic Spanish wording alone is insufficient;
+- individual tutors (for example ads explicitly describing the author as a `репетитор`) are excluded from the school fingerprint;
+- unrelated Spanish schools remain separate unless the strong campaign fingerprint is satisfied.
