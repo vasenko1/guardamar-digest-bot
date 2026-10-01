@@ -103,7 +103,7 @@ Rules introduced by the correction pass:
 - classifier version 2026-10-01.2 separates flowers from food, strengthens rental
   recognition across descriptive punctuation and treats Alicante province context
   separately from Alicante city;
-- editorial version 2026-10-01.4 adds intent rules for client-order seeking,
+- editorial version 2026-10-01.5 adds intent rules for client-order seeking,
   transport requests, pet adoption and explicit sales inside health/beauty; creates
   broad jobs and education categories when the LLM plan omitted them but strong
   source evidence exists; repairs Ukrainian construction vacancies, giveaway items,
@@ -131,6 +131,8 @@ individual regression cases were reviewed in isolation:
 - Ukrainian "аеропорт" did not trigger trip intent;
 - outside-city suffixes could be grammatically awkward or misleading when Guardamar
   was explicitly included in the local delivery area.
+
+- health/beauty sale intent is restricted to explicit health-product sales, so a service company that mentions equipment sales inside a broader HVAC offer remains a service;
 
 Editorial version 2026-10-01.4 repairs these cases deterministically without
 changing the classifier run or its checkpoints.
