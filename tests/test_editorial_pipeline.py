@@ -544,7 +544,7 @@ class PipelineTest(unittest.TestCase):
                 "SELECT reason_code FROM duplicate_reviews WHERE period_key='2026-07'"
             ).fetchone()[0]
         self.assertEqual(active, 1)
-        self.assertEqual(reason, "cross_author_spanish_campaign")
+        self.assertEqual(reason, "cross_author_spanish_school_campaign")
         # Re-running the monthly pipeline must rebuild the same canonical
         # result without reopening the pair or calling a provider.
         dedupe(self.db, "2026-07")
@@ -569,6 +569,82 @@ class PipelineTest(unittest.TestCase):
             "A0–C1, мінігрупи, сучасна платформа, розмовна практика"
         )
         self.assertFalse(_same_cross_author_spanish_campaign(campaign, bebest))
+
+    def test_same_spanish_school_collapses_different_course_formats_same_author(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            add_message(
+                con, 401,
+                "🇪🇸 УКРАЇНСЬКИЙ ЦЕНТР: лекційний курс іспанської, "
+                "живий викладач, середа та п'ятниця 20:00, 1 євро за урок, онлайн",
+                sender="school-account",
+            )
+            add_message(
+                con, 402,
+                "🇪🇸 Онлайн-курси іспанської: індивідуально, міні-група, "
+                "група, speaking club, підготовка до іспитів",
+                sender="school-account",
+                published="2026-07-20T10:00:00",
+            )
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)), \
+             patch("guardamar_digest.dedupe._ask_provider",
+                   side_effect=AssertionError("known school rule must not call an LLM")):
+            semantic_dedupe(settings, "2026-07")
+        with connect(self.db) as con:
+            active = con.execute(
+                "SELECT COUNT(*) FROM entries WHERE period_key='2026-07' AND excluded_reason IS NULL"
+            ).fetchone()[0]
+            reason = con.execute(
+                "SELECT reason_code FROM duplicate_reviews WHERE period_key='2026-07'"
+            ).fetchone()[0]
+        self.assertEqual(active, 1)
+        self.assertEqual(reason, "same_author_spanish_school_campaign")
+
+    def test_multi_account_spanish_school_is_linked_by_rare_campaign_markers(self):
+        lecture = (
+            "🇪🇸 УКРАЇНОМОВНИЙ ЦЕНТР запрошує на ЛЕКЦІЙНИЙ КУРС "
+            "з іспанської мови онлайн, живий викладач, середа та п'ятниця "
+            "20:00, 1€ за урок"
+        )
+        catalogue = (
+            "🇪🇸 ІСПАНСЬКА ОНЛАЙН: індивідуальні заняття, міні-групи, "
+            "рівні A0-C1, сучасні матеріали, розмовна практика. "
+            "Лекційний курс лише 1 €"
+        )
+        self.assertTrue(_same_cross_author_spanish_campaign(lecture, catalogue))
+        with connect(self.db) as con:
+            add_message(con, 411, lecture, sender="school-a")
+            add_message(
+                con, 412, catalogue, sender="school-b",
+                published="2026-07-20T10:00:00",
+            )
+        settings = make_settings(self.db)
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)), \
+             patch("guardamar_digest.dedupe._ask_provider",
+                   side_effect=AssertionError("known school rule must not call an LLM")):
+            semantic_dedupe(settings, "2026-07")
+        with connect(self.db) as con:
+            active = con.execute(
+                "SELECT COUNT(*) FROM entries WHERE period_key='2026-07' AND excluded_reason IS NULL"
+            ).fetchone()[0]
+            reason = con.execute(
+                "SELECT reason_code FROM duplicate_reviews WHERE period_key='2026-07'"
+            ).fetchone()[0]
+        self.assertEqual(active, 1)
+        self.assertEqual(reason, "cross_author_spanish_school_campaign")
+
+    def test_individual_spanish_tutor_is_not_absorbed_into_school_campaign(self):
+        school = (
+            "🇪🇸 УКРАЇНСЬКИЙ ЦЕНТР: онлайн лекційний курс іспанської "
+            "з живим викладачем, 1€ за урок, міні-групи"
+        )
+        tutor = (
+            "Всем привет, меня зовут Ксюша, я репетитор по испанскому языку, "
+            "носитель языка, занимаюсь индивидуально"
+        )
+        self.assertFalse(_same_cross_author_spanish_campaign(school, tutor))
 
     def test_broad_transport_topic_does_not_merge_different_vehicles(self):
         left = {"source_text": "Сдам в аренду Toyota Corolla 2022"}
