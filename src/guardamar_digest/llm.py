@@ -25,7 +25,7 @@ MAX_RETRIES = 2
 # but keep the bound small so one entry cannot consume the daily quota.
 MODEL_RESPONSE_ATTEMPTS = 2
 LEGACY_CLASSIFIER_VERSION = "2026-07-31.2"
-CLASSIFIER_VERSION = "2026-10-01.1"
+CLASSIFIER_VERSION = "2026-10-01.2"
 CATEGORY_CODE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 RUSSIAN_TEXT = re.compile(r"[а-яё]", re.I)
 UKRAINIAN_ONLY = re.compile(r"[іїєґ]", re.I)
@@ -85,6 +85,23 @@ OTHER_LOCATION_ALIASES = (
     ("Ла-Марина", ("ла-марин", "ла марин", "la marina")),
     ("Альморади", ("альморади", "almoradi")),
 )
+ALICANTE_PROVINCE_CONTEXT = re.compile(
+    r"(?:провинци\w*|provincia)\s+(?:de\s+)?(?:аликанте|alicante)|"
+    r"(?:guardamar\s+del\s+segura|santa\s+pola|torrevieja)"
+    r"[^\n]{0,45}(?:[,|#]\s*|\s+#)(?:alicante|аликанте)",
+    re.I,
+)
+
+
+def _outside_location_names(text: str) -> list[str]:
+    folded = unicodedata.normalize("NFKC", text).casefold()
+    names = []
+    for display, aliases in OTHER_LOCATION_ALIASES:
+        if display == "Аликанте" and ALICANTE_PROVINCE_CONTEXT.search(folded):
+            continue
+        if any(alias in folded for alias in aliases):
+            names.append(display)
+    return names
 
 
 def _required_location(source_text: str) -> tuple[str, tuple[str, ...]] | None:
@@ -99,11 +116,16 @@ def _required_location(source_text: str) -> tuple[str, tuple[str, ...]] | None:
         line for line in lines[1:]
         if line.startswith(("📍", "Место:", "Локация:"))
     )
-    emphasized = "\n".join(candidates).casefold()
-    for display, aliases in OTHER_LOCATION_ALIASES:
-        if any(alias in emphasized for alias in aliases):
-            return display, aliases
-    return None
+    emphasized = "\n".join(candidates)
+    names = _outside_location_names(emphasized)
+    if not names:
+        return None
+    display = names[0]
+    aliases = next(
+        aliases for candidate, aliases in OTHER_LOCATION_ALIASES
+        if candidate == display
+    )
+    return display, aliases
 SOURCE_SEEK = re.compile(
     # "Требуется/требуются" describes a vacancy (an offer of work), not a
     # first-person customer search. Its direction is rendered by the
@@ -146,8 +168,11 @@ FLOWERS = re.compile(
     re.I,
 )
 FOOD_CATEGORY = re.compile(
-    r"\b(?:ед[аы]|продукт\w*|выпечк\w*|десерт\w*|"
-    r"цвет(?:ы|ов|ок|ка|ки|ами|ах|очн\w*)|букет\w*)\b",
+    r"\b(?:ед[аы]|продукт\w*|выпечк\w*|десерт\w*|торт\w*|пирожн\w*)\b",
+    re.I,
+)
+FLOWER_CATEGORY = re.compile(
+    r"\b(?:цвет(?:ы|ов|ок|ка|ки|ами|ах|очн\w*)|букет\w*)\b",
     re.I,
 )
 REAL_ESTATE_SOURCE = re.compile(
@@ -370,8 +395,10 @@ def _sanitize_showcase_title(
 
 
 def _validate_category_assignment(source_text: str, category_title: str) -> None:
-    if (FOOD.search(source_text) or FLOWERS.search(source_text)) and not FOOD_CATEGORY.search(category_title):
-        raise ValueError("food or flowers assigned outside their digest section")
+    if FLOWERS.search(source_text) and not FLOWER_CATEGORY.search(category_title):
+        raise ValueError("flowers assigned outside their digest section")
+    if FOOD.search(source_text) and not FOOD_CATEGORY.search(category_title):
+        raise ValueError("food assigned outside its digest section")
     mode = _realestate_mode(source_text)
     if mode and category_title != REAL_ESTATE_SECTIONS[mode][1]:
         raise ValueError("real estate assigned to the wrong intent subsection")
@@ -405,6 +432,15 @@ def _realestate_mode(source_text: str) -> str | None:
         re.I,
     ):
         return "rent_seek"
+    if re.search(
+        r"\b(?:аренд\w*|оренд\w*)\b[^.!?\n]{0,180}"
+        r"\b(?:квартир\w*|жиль[еёя]|бунгало|студи\w*|апартамент\w*|дом\w*)\b|"
+        r"\b(?:квартир\w*|жиль[еёя]|бунгало|студи\w*|апартамент\w*|дом\w*)\b"
+        r"[^.!?\n]{0,180}\b(?:аренд\w*|оренд\w*)\b",
+        source_text,
+        re.I | re.S,
+    ):
+        return "rent_offer"
     if REAL_ESTATE_OFFER.search(source_text):
         return "rent_offer"
     first_line = next(
@@ -460,6 +496,13 @@ def _realestate_object(source_text: str, seek: bool) -> str:
 
 
 def _realestate_term(source_text: str) -> str | None:
+    if re.search(
+        r"\b(?:долгосрочн\w*|длительн\w*|долг\w*\s+срок|"
+        r"зимн\w*\s+период|на\s+весь\s+год|на\s+год)\b",
+        source_text,
+        re.I,
+    ):
+        return "длительно"
     numeric = re.search(
         r"\b(\d{1,2}[./]\d{1,2})\s*(?:по|[-–—])\s*(\d{1,2}[./]\d{1,2})\b",
         source_text,
@@ -478,13 +521,6 @@ def _realestate_term(source_text: str) -> str | None:
         return f"{same_month.group(1)}–{same_month.group(2)} {same_month.group(3).lower()}"
     if re.search(r"\b(?:посуточн\w*|на\s+сутки)\b", source_text, re.I):
         return "посуточно"
-    if re.search(
-        r"\b(?:долгосрочн\w*|длительн\w*|долг\w*\s+срок|"
-        r"на\s+весь\s+год|на\s+год)\b",
-        source_text,
-        re.I,
-    ):
-        return "длительно"
     return None
 
 
@@ -578,27 +614,33 @@ def _category_carries_intent(category_title: str) -> bool:
 
 
 def _ensure_editorial_categories(categories: list[dict], rows: list[dict]) -> tuple[list[dict], bool]:
-    """Add a dynamic broad section only when this month's sample needs it."""
+    """Ensure food and flowers have separate broad digest sections when needed."""
     has_food = any(FOOD.search(row["text"]) for row in rows)
     has_flowers = any(FLOWERS.search(row["text"]) for row in rows)
-    if not has_food and not has_flowers:
-        return categories, False
-    if any(FOOD_CATEGORY.search(category["title"]) for category in categories):
-        return categories, False
-    used = {category["code"] for category in categories}
-    code = "food_flowers"
-    suffix = 2
-    while code in used:
-        code = f"food_flowers_{suffix}"
-        suffix += 1
-    if has_food and has_flowers:
-        title, emoji = "Еда и цветы", "🍰🌸"
-    elif has_food:
-        title, emoji = "Еда и доставка", "🍰"
-    else:
-        title, emoji = "Цветы и букеты", "🌸"
-    return [*categories, {"code": code, "title": title, "emoji": emoji}], True
+    result = list(categories)
+    used = {category["code"] for category in result}
+    changed = False
 
+    if has_food and not any(FOOD_CATEGORY.search(category["title"]) for category in result):
+        code = "food"
+        suffix = 2
+        while code in used:
+            code = f"food_{suffix}"
+            suffix += 1
+        result.append({"code": code, "title": "Еда и продукты", "emoji": "🎂"})
+        used.add(code)
+        changed = True
+
+    if has_flowers and not any(FLOWER_CATEGORY.search(category["title"]) for category in result):
+        code = "flowers"
+        suffix = 2
+        while code in used:
+            code = f"flowers_{suffix}"
+            suffix += 1
+        result.append({"code": code, "title": "Цветы и букеты", "emoji": "🌸"})
+        changed = True
+
+    return result, changed
 
 def _ensure_realestate_categories(categories: list[dict], rows: list[dict]) -> tuple[list[dict], bool]:
     modes = {mode for row in rows if (mode := _realestate_mode(row["text"]))}
