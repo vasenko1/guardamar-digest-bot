@@ -15,7 +15,7 @@ from .llm import (
 )
 
 
-VERSION = "2026-10-01.3"
+VERSION = "2026-10-01.4"
 VALID_INTENTS = {
     "sale_offer", "purchase_seek", "giveaway", "rent_offer", "rent_seek",
     "service_offer", "service_seek", "job_offer", "job_seek",
@@ -68,7 +68,7 @@ JOB_SEEK = re.compile(
 JOB_OFFER = re.compile(
     r"\b(?:ваканси\w*|требу(?:ется|ются)|в\s+поисках\s+сотрудник\w*|"
     r"ищем\s+(?:ответственн\w+\s+)?(?:специалист|сотрудник|работник|мастер)\w*|"
-    r"потріб\w*\s+(?:працівник|робітник|майстер)|"
+    r"потріб\w*\s+(?:працівник|робітник|майстер|універсал\w*)|"
     r"ищу\s+нян\w*|требу(?:ется|ются)\s+нян\w*|работа\s*[!:.\n])",
     re.I,
 )
@@ -77,13 +77,15 @@ JOB_CATEGORY_REPAIR_OFFER = re.compile(
     r"\b(?:ищем|в\s+поисках)\s+(?:ответственн\w+\s+)?"
     r"(?:сотрудник|работник|працівник|робітник)\w*\b|"
     r"\bработа\s*[!:.\n]|"
+    r"\bпотрібн\w*\s+(?:універсал\w*|працівник\w*|робітник\w*)\b|"
     r"\b(?:сто|автосервис\w*)\b.{0,100}\bтребу(?:ется|ются)\b"
     r".{0,140}\b(?:рихтовщик|кузовщик|сварщик|автомаляр|"
     r"(?:авто)?подготовщик)\w*\b",
     re.I | re.S,
 )
 TRIP = re.compile(
-    r"\b(?:трансфер\w*|попутчик\w*|поездк\w*|еду|їхат\w*|аэропорт\w*|вокзал\w*)\b",
+    r"\b(?:трансфер\w*|попутчик\w*|поездк\w*|еду|їхат\w*|"
+    r"аэропорт\w*|аеропорт\w*|вокзал\w*)\b",
     re.I,
 )
 SERVICE_DOMINANT = re.compile(
@@ -116,6 +118,13 @@ ADOPTION_GIVEAWAY = re.compile(
     r"(?:\bищ\w*\s+(?:для\s+них\s+)?(?:семь\w*|дом\w*)|"
     r"\b(?:добрые|хорошие|заботливые)\s+(?:и\s+\w+\s+)?руки\b|"
     r"\bготов\w*\s+переехат\w*)",
+    re.I | re.S,
+)
+EDUCATION_OFFER = re.compile(
+    r"\b(?:курс\w*\s+(?:испанск\w*|іспанськ\w*)|"
+    r"репетитор\w*\s+по\s+(?:испанск\w*|іспанськ\w*)|"
+    r"преподавател\w*\s+по\s+шахмат\w*|"
+    r"обуч\w*.{0,80}\b(?:маркетинг\w*|smm)\b)",
     re.I | re.S,
 )
 
@@ -170,14 +179,16 @@ def infer_intent(category_title: str, source: str) -> str:
             return "giveaway"
         if RENT.search(source):
             return "rent_seek" if SEEK.search(source) else "rent_offer"
+        if GIVE.search(source) and not PRICE.search(source):
+            return "giveaway"
         if SELL.search(source) or PRICE.search(source):
             return "sale_offer"
-        if GIVE.search(source) and FREE.search(source):
-            return "giveaway"
         if SEEK.search(source):
             return "purchase_seek"
         return "sale_offer"
     if any(word in category for word in ("услуг", "красот", "здоров")):
+        if SELL.search(source):
+            return "sale_offer"
         if SMM_OFFER.search(source) or CLIENT_WORK_OFFER.search(source):
             return "service_offer"
         return "service_seek" if SEEK.search(source) else "service_offer"
@@ -185,6 +196,17 @@ def infer_intent(category_title: str, source: str) -> str:
 
 
 def service_title(source: str, existing: str) -> str:
+    if re.search(r"\bвоздуховод\w*\b", source, re.I) and re.search(
+        r"\b(?:чистк\w*|изготовлен\w*)\b", source, re.I
+    ):
+        return "Чистка и изготовление воздуховодов"
+    if re.search(r"\bгруминг\w*\b", source, re.I):
+        return "Груминг"
+    if re.search(r"\bграфическ\w*\s+дизайн\w*\b", source, re.I) and re.search(
+        r"\b(?:наружн\w*\s+реклам\w*|вывеск\w*|широкоформатн\w*\s+печать)\b",
+        source, re.I,
+    ):
+        return "Графический дизайн и наружная реклама"
     if re.search(r"\bфитнес[-\s]?тренер\w*|\bфитнес[-\s]?трениров\w*", source, re.I):
         return "Фитнес-тренировки"
     if re.search(r"\b(?:натуропат\w*|травник\w*)\b", source, re.I):
@@ -292,7 +314,9 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
         elif re.search(r"іспанськ|испанск", lowered) and re.search(r"онлайн", lowered):
             title = "Испанский язык онлайн"
     if "работ" in category.casefold() or "ваканси" in category.casefold():
-        if re.search(r"рихтовщик|кузовщик|сварщик|автомаляр|подготовщик", lowered):
+        if re.search(r"потрібн\w*\s+універсал\w*.*будівництв", lowered, re.S):
+            title = "Строители-универсалы"
+        elif re.search(r"рихтовщик|кузовщик|сварщик|автомаляр|подготовщик", lowered):
             title = bodyshop_job_title(source, title)
         elif re.search(r"помощник\w*\s+по\s+кухн", lowered):
             title = "Помощник на кухню"
@@ -345,6 +369,8 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
                 title = "Букеты и цветы"
         elif re.search(r"торт|пирожн|десерт", lowered):
             title = "Торты и десерты"
+    if intent == "sale_offer" and re.search(r"\b[еэ]тацизин\w*\b", lowered):
+        title = "Етацизин"
     if intent == "service_offer":
         if SMM_OFFER.search(source):
             title = "Ведение Instagram"
@@ -365,6 +391,15 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
         title = re.sub(r"^ваканси[ия]\s+", "", title, flags=re.I)
     elif intent == "job_seek":
         title = re.sub(r"^ищу\s+работу\s*", "", title, flags=re.I)
+    elif intent == "trip_offer":
+        if re.search(r"\btorrevieja\b", lowered) and re.search(
+            r"\b(?:іспані|испани)\w*\b", lowered
+        ):
+            title = "Трансфер по Испании, Торревьеха"
+        elif re.search(r"\bаэропорт\w*|\baeropuerto\w*|\baеропорт\w*", lowered) and re.search(
+            r"\b(?:между\s+город|між\s+міст|поездк\w*\s+между\s+город)\b", lowered
+        ):
+            title = "Трансфер в аэропорты и между городами"
     elif intent == "trip_seek":
         trip_context = f"{source}\n{title}".casefold()
         if re.search(r"\bпосылк\w*\b", trip_context):
@@ -406,14 +441,21 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
     title = title.strip(" ,;:–—-")
     if title and re.match(r"[а-яё]", title):
         title = title[0].upper() + title[1:]
+    local_delivery_coverage = bool(
+        LOCAL_CITY.search(source)
+        and re.search(r"достав\w*", source, re.I)
+        and re.search(r"ед[аы]|подар|цвет|букет", category, re.I)
+    )
     append_outside_location = bool(
-        original_location and (
+        original_location
+        and not local_delivery_coverage
+        and (
             original_title_has_location
             or (
                 original_scope == "outside"
                 and not (
                     "транспорт" in category.casefold()
-                    and intent in {"rent_offer", "service_offer"}
+                    and intent in {"rent_offer", "service_offer", "trip_offer"}
                 )
             )
         )
@@ -458,6 +500,13 @@ def normalize_period(settings, period: str) -> dict[str, int]:
             (
                 item for item in categories
                 if re.search(r"работ|ваканси", item.get("title", ""), re.I)
+            ),
+            None,
+        )
+        education_category = next(
+            (
+                item for item in categories
+                if re.search(r"обуч|курс|образован", item.get("title", ""), re.I)
             ),
             None,
         )
@@ -515,6 +564,37 @@ def normalize_period(settings, period: str) -> dict[str, int]:
                     categories.insert(categories.index(service_category), job_category)
                 else:
                     categories.append(job_category)
+                con.execute(
+                    "UPDATE classification_runs SET categories_json=? WHERE period_key=?",
+                    (json.dumps(categories, ensure_ascii=False), period),
+                )
+        if education_category is None:
+            possible_education = con.execute(
+                """SELECT m.source_text FROM entries e JOIN messages m ON m.id=e.message_id
+                   WHERE e.period_key=? AND e.eligible=1 AND e.excluded_reason IS NULL
+                     AND e.manual_category IS NULL
+                """,
+                (period,),
+            ).fetchall()
+            if any(EDUCATION_OFFER.search(row["source_text"]) for row in possible_education):
+                used_codes = {item.get("code") for item in categories}
+                code = "education"
+                suffix = 2
+                while code in used_codes:
+                    code = f"education_{suffix}"
+                    suffix += 1
+                education_category = {
+                    "code": code,
+                    "title": "Обучение и курсы",
+                    "emoji": "🎓",
+                }
+                if service_category and service_category in categories:
+                    categories.insert(
+                        categories.index(service_category) + 1,
+                        education_category,
+                    )
+                else:
+                    categories.append(education_category)
                 con.execute(
                     "UPDATE classification_runs SET categories_json=? WHERE period_key=?",
                     (json.dumps(categories, ensure_ascii=False), period),
@@ -587,6 +667,17 @@ def normalize_period(settings, period: str) -> dict[str, int]:
                 category_title = job_category["title"]
                 category_emoji = job_category.get("emoji", "💼")
                 reason = "explicit job intent moved to jobs category"
+                counts["category_repairs"] += 1
+            if (
+                row["manual_category"] is None
+                and education_category
+                and EDUCATION_OFFER.search(row["source_text"])
+                and not re.search(r"обуч|курс|образован", category_title, re.I)
+            ):
+                category_code = education_category["code"]
+                category_title = education_category["title"]
+                category_emoji = education_category.get("emoji", "🎓")
+                reason = "explicit education offer moved to education category"
                 counts["category_repairs"] += 1
             if (
                 row["manual_category"] is None
