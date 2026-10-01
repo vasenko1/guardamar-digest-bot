@@ -12,7 +12,7 @@ from .db import connect
 from .llm import _json, _post
 
 
-VERSION = "2026-08-03.3"
+VERSION = "2026-10-01.1"
 _blocked_providers: set[str] = set()
 
 
@@ -436,8 +436,10 @@ def _deterministic_arbitration(left: object, right: object) -> tuple[str, str, s
     routes_a, routes_b = _route_features(a), _route_features(b)
     if routes_a and routes_b and routes_a.isdisjoint(routes_b):
         return "different", "explicit_route_conflict", "high"
-    if campaign_topics:
-        return "same", "same_author_safe_campaign", "medium"
+    # A shared commercial topic is useful for candidate discovery, but it is
+    # not offer identity. Real September data showed that one author can post
+    # different apartments/items/services inside the same broad topic. Only
+    # actual textual/factual overlap may become an automatic fallback match.
     score = similarity(a, b)
     common = tokens(a) & tokens(b)
     smaller = min(len(tokens(a)), len(tokens(b))) or 1
@@ -658,7 +660,6 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
         hard_rule = rule_reason in {
             "intent_conflict", "explicit_date_conflict", "explicit_route_conflict",
             "explicit_vehicle_conflict", "explicit_bedroom_conflict",
-            "same_author_safe_campaign",
             "cross_author_spanish_campaign",
         }
         if hard_rule:
