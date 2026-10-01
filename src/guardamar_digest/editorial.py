@@ -193,7 +193,7 @@ def service_title(source: str, existing: str) -> str:
 
 
 def vehicle_title(source: str, existing: str) -> str:
-    identity = re.search(
+    identities = re.findall(
         r"\b(audi|bmw|chevrolet|citro[eë]n|fiat|ford|honda|hyundai|kia|"
         r"mazda|mercedes|mitsubishi|nissan|opel|peugeot|renault|seat|"
         r"skoda|tesla|toyota|volkswagen|volvo)\s+([a-z0-9-]{1,20})\b",
@@ -201,9 +201,9 @@ def vehicle_title(source: str, existing: str) -> str:
         re.I,
     )
     year = re.search(r"\b((?:19|20)\d{2})\b", source)
-    if not identity:
+    if len(identities) != 1:
         return existing
-    brand, model = identity.groups()
+    brand, model = identities[0]
     brand = brand.upper() if brand.casefold() == "bmw" else brand.capitalize()
     parts = [f"{brand} {model}"]
     if year:
