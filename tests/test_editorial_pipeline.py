@@ -637,6 +637,17 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(active, 1)
         self.assertEqual(reason, "cross_author_spanish_school_campaign")
 
+    def test_generic_spanish_course_formats_do_not_merge_across_accounts(self):
+        left = (
+            "🇪🇸 Испанский онлайн: индивидуальные занятия, мини-группа, "
+            "групповой формат, разговорная практика"
+        )
+        right = (
+            "🇪🇸 Онлайн-курсы испанского: индивидуально, в мини-группе "
+            "или группе, занятия для взрослых"
+        )
+        self.assertFalse(_same_cross_author_spanish_campaign(left, right))
+
     def test_individual_spanish_tutor_is_not_absorbed_into_school_campaign(self):
         school = (
             "🇪🇸 УКРАЇНСЬКИЙ ЦЕНТР: онлайн лекційний курс іспанської "
