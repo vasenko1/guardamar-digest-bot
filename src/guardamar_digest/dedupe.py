@@ -202,7 +202,7 @@ def _same_cross_author_spanish_campaign(left: str, right: str) -> bool:
     )
 
 
-def _row_value(row: object, key: str) -> object | None:
+def _row_value(row: object, key: str) -> object:
     if isinstance(row, dict):
         return row.get(key)
     try:
