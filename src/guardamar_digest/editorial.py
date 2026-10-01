@@ -412,6 +412,13 @@ def normalize_period(settings, period: str) -> dict[str, int]:
             ),
             None,
         )
+        transport_category = next(
+            (
+                item for item in categories
+                if re.search(r"транспорт|авто", item.get("title", ""), re.I)
+            ),
+            None,
+        )
         if service_category is None:
             possible_services = con.execute(
                 """SELECT m.source_text FROM entries e JOIN messages m ON m.id=e.message_id
@@ -468,6 +475,30 @@ def normalize_period(settings, period: str) -> dict[str, int]:
                 if row["manual_title"] is None:
                     title = _compact_realestate_title(row["source_text"])
                 reason = "real estate moved to correct intent subsection"
+                counts["category_repairs"] += 1
+            if (
+                row["manual_category"] is None
+                and CLIENT_WORK_OFFER.search(row["source_text"])
+                and re.search(r"работ|ваканси", category_title, re.I)
+                and service_category
+            ):
+                category_code = service_category["code"]
+                category_title = service_category["title"]
+                category_emoji = service_category.get("emoji", "🛠")
+                if row["manual_title"] is None:
+                    title = service_title(row["source_text"], title)
+                reason = "client-seeking professional moved from jobs to services"
+                counts["category_repairs"] += 1
+            if (
+                row["manual_category"] is None
+                and TRANSPORT_SEEK.search(row["source_text"])
+                and not re.search(r"транспорт|авто", category_title, re.I)
+                and transport_category
+            ):
+                category_code = transport_category["code"]
+                category_title = transport_category["title"]
+                category_emoji = transport_category.get("emoji", "🚗")
+                reason = "transport request moved to transport category"
                 counts["category_repairs"] += 1
             if (
                 row["manual_category"] is None
