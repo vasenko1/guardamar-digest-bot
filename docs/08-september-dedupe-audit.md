@@ -103,14 +103,39 @@ Rules introduced by the correction pass:
 - classifier version 2026-10-01.2 separates flowers from food, strengthens rental
   recognition across descriptive punctuation and treats Alicante province context
   separately from Alicante city;
-- editorial version 2026-10-01.3 adds intent rules for client-order seeking,
-  transport requests and pet adoption, creates a broad jobs category when the LLM
-  plan omitted it but explicit job offers/job seekers exist, repairs those entries
-  into jobs, and uses stable titles for naturopath, fitness, caregiving, translator,
-  flowers, car rental and adoption entries;
+- editorial version 2026-10-01.4 adds intent rules for client-order seeking,
+  transport requests, pet adoption and explicit sales inside health/beauty; creates
+  broad jobs and education categories when the LLM plan omitted them but strong
+  source evidence exists; repairs Ukrainian construction vacancies, giveaway items,
+  education offers, duct-cleaning titles and compact transport/location display;
 - transport requests render under their own subsection "Ищу перевозку".
 
 Explicit non-goal:
 - message 7480 (stolen backpack/documents) remains outside the current commercial/
   service digest because adding a "Потери и находки" product section is a separate
   scope decision, not a correction of the existing pipeline.
+
+
+## Final v5 editorial pass
+
+The complete v4 preview exposed a small set of errors that were not visible when
+individual regression cases were reviewed in isolation:
+
+- education offers (Spanish courses, private tutor, chess lessons and SMM training)
+  could remain inside services when the LLM category plan omitted education;
+- Ukrainian "потрібні універсали" construction recruitment could remain a service
+  instead of a vacancy;
+- explicit "Отдам ..." goods without a price could fall through to sale;
+- explicit "Продам ..." inside beauty/health could remain service intent;
+- the broad HVAC title hid a distinct duct-cleaning/manufacturing service;
+- Ukrainian "аеропорт" did not trigger trip intent;
+- outside-city suffixes could be grammatically awkward or misleading when Guardamar
+  was explicitly included in the local delivery area.
+
+Editorial version 2026-10-01.4 repairs these cases deterministically without
+changing the classifier run or its checkpoints.
+
+Messages 7352 and 7724 remain a manual editorial-review candidate: same author,
+same "для знакомых" housing search and overlapping Elche scope suggest one updated
+campaign, but the evidence is not strong enough for a new automatic dedupe rule.
+The pair is intentionally not auto-merged and dedupe version remains unchanged.
