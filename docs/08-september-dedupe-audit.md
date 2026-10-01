@@ -71,3 +71,44 @@ From dedupe version 2026-10-01.3:
 - generic Spanish wording alone is insufficient;
 - individual tutors (for example ads explicitly describing the author as a `репетитор`) are excluded from the school fingerprint;
 - unrelated Spanish schools remain separate unless the strong campaign fingerprint is satisfied.
+
+
+## Final editorial QA correction pass
+
+After the first technically valid September preview, human editorial review found
+content errors that schema/HTML validation could not detect. The correction pass is
+grounded in those real messages rather than broader heuristics.
+
+Observed failures:
+- a post sent as the source channel itself (Jardín Musical) entered the digest;
+- a Torrevieja rental studio was classified as HVAC because its amenities mention
+  an air conditioner;
+- Guardamar addresses containing "Alicante" as the province were displayed as if
+  the listing were in Alicante city;
+- a naturopath post became "Антибактериальная обработка салона";
+- a designer seeking first client orders was rendered as somebody seeking a designer;
+- a parcel request was rendered as a transport offer;
+- kittens seeking a family were placed under "Куплю";
+- flowers were mixed into the food category;
+- image-dependent texts with no named product produced meaningless titles;
+- repeated monthly campaigns remained for the same fitness trainer, naturopath,
+  body-shop vacancy, caregiver and confectioner.
+
+Rules introduced by the correction pass:
+- prefilter version 2026-10-01.1 excludes the source-channel sender identity derived
+  from the Telegram source chat id and high-confidence image-dependent text stubs;
+- dedupe version 2026-10-01.4 adds only narrow same-author monthly campaign
+  fingerprints for the evidenced business/service classes and a product+price rule
+  for the repeated laptop case;
+- classifier version 2026-10-01.2 separates flowers from food, strengthens rental
+  recognition across descriptive punctuation and treats Alicante province context
+  separately from Alicante city;
+- editorial version 2026-10-01.1 adds intent rules for client-order seeking,
+  transport requests and pet adoption, plus stable titles for naturopath, fitness,
+  caregiving, translator, flowers and car rental entries;
+- transport requests render under their own subsection "Ищу перевозку".
+
+Explicit non-goal:
+- message 7480 (stolen backpack/documents) remains outside the current commercial/
+  service digest because adding a "Потери и находки" product section is a separate
+  scope decision, not a correction of the existing pipeline.
