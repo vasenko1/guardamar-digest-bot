@@ -309,7 +309,15 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
             title = "Группа раннего развития Mi Cielito, 1,5–3 года"
         elif "bebest" in lowered and "онлайн-курс" in lowered:
             title = "Испанский язык в школе BeBest"
-        elif re.search(r"лекц\w*\s+курс|лекційний\s+курс", lowered):
+        elif (
+            re.search(r"лекц\w*\s+курс|лекційний\s+курс", lowered)
+            and re.search(
+                r"2\s*раз\w*\s+в\s+недел|"
+                r"(?:середа|среда).{0,50}(?:п['’]?ятниц|пятниц)",
+                lowered,
+                re.S,
+            )
+        ):
             title = "Испанский язык, 2 раза в неделю"
         elif re.search(r"английск\w*|англійськ\w*", lowered) and re.search(r"от\s+5|від\s+5", lowered):
             title = "Английский язык для детей от 5 лет"
