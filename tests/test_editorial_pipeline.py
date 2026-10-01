@@ -1184,6 +1184,30 @@ class PipelineTest(unittest.TestCase):
         )
         self.assertEqual(both[0]["title"], "Еда и цветы")
 
+    def test_training_recruitment_is_not_forced_into_seek_title(self):
+        source = (
+            "Обучу девушку маркетингу и SMM с нуля! "
+            "Ищу девушку, которую готова обучить востребованной профессии "
+            "и взять на дополнительный заработок после обучения."
+        )
+        self.assertEqual(
+            _validate_showcase_title(
+                "Обучение маркетингу и SMM",
+                source,
+            ),
+            "Обучение маркетингу и SMM",
+        )
+        with self.assertRaisesRegex(ValueError, "request into an offer"):
+            _validate_showcase_title(
+                "Обучение SMM",
+                "Ищу девушку, которая обучит меня SMM",
+            )
+        with self.assertRaisesRegex(ValueError, "request into an offer"):
+            _validate_showcase_title(
+                "Ремонт квартиры",
+                "Ищу мастера для ремонта квартиры",
+            )
+
     def test_compact_category_specific_titles(self):
         self.assertEqual(
             _compact_checkpoint_title(
