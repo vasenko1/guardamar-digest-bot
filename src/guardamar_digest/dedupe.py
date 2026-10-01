@@ -536,6 +536,8 @@ def _deterministic_arbitration(left: object, right: object) -> tuple[str, str, s
     # different apartments/items/services inside the same broad topic. Only
     # actual textual/factual overlap may become an automatic fallback match.
     score = similarity(a, b)
+    if campaign_topics and score < 0.25:
+        return "different", "broad_topic_low_overlap", "high"
     common = tokens(a) & tokens(b)
     smaller = min(len(tokens(a)), len(tokens(b))) or 1
     containment = len(common) / smaller
@@ -755,7 +757,7 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
         hard_rule = rule_reason in {
             "intent_conflict", "explicit_date_conflict", "explicit_route_conflict",
             "explicit_vehicle_conflict", "explicit_bedroom_conflict",
-            "same_author_spanish_school_campaign",
+            "broad_topic_low_overlap", "same_author_spanish_school_campaign",
             "cross_author_spanish_school_campaign",
         }
         if hard_rule:
