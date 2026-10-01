@@ -195,16 +195,19 @@ def service_title(source: str, existing: str) -> str:
 def bodyshop_job_title(source: str, existing: str) -> str:
     roles = []
     role_patterns = (
-        ("Рихтовщик", r"\bрихтовщик\w*\b"),
-        ("Кузовщик", r"\bкузовщик\w*\b"),
-        ("Сварщик", r"\bсварщик\w*\b"),
-        ("Автомаляр", r"\bавтомаляр\w*\b"),
-        ("Подготовщик", r"\b(?:авто)?подготовщик\w*\b"),
+        ("рихтовщик", r"\bрихтовщик\w*\b"),
+        ("кузовщик", r"\bкузовщик\w*\b"),
+        ("сварщик", r"\bсварщик\w*\b"),
+        ("автомаляр", r"\bавтомаляр\w*\b"),
+        ("подготовщик", r"\b(?:авто)?подготовщик\w*\b"),
     )
     for label, pattern in role_patterns:
         if re.search(pattern, source, re.I):
             roles.append(label)
-    return ", ".join(roles) if roles else existing
+    if not roles:
+        return existing
+    title = ", ".join(roles)
+    return title[0].upper() + title[1:]
 
 
 def vehicle_title(source: str, existing: str) -> str:
