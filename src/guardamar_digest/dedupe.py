@@ -525,6 +525,14 @@ def _deterministic_arbitration(left: object, right: object) -> tuple[str, str, s
     sender_a = _row_value(left, "sender_id")
     sender_b = _row_value(right, "sender_id")
     if sender_a and sender_a == sender_b:
+        common_topics = _commercial_topics(a) & _commercial_topics(b)
+        prices_a, prices_b = _euro_prices(a), _euro_prices(b)
+        if (
+            "laptop" in common_topics
+            and prices_a and prices_b
+            and prices_a.isdisjoint(prices_b)
+        ):
+            return "different", "explicit_laptop_price_conflict", "high"
         campaign_reason = _same_author_campaign_reason(a, b)
         if campaign_reason:
             return "same", campaign_reason, "high"
@@ -779,6 +787,7 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
         hard_rule = rule_reason in {
             "intent_conflict", "explicit_date_conflict", "explicit_route_conflict",
             "explicit_vehicle_conflict", "explicit_bedroom_conflict",
+            "explicit_laptop_price_conflict",
             "broad_topic_low_overlap", "same_author_fitness_coach_campaign",
             "same_author_naturopath_campaign", "same_author_bodyshop_jobs_campaign",
             "same_author_caregiving_campaign", "same_author_bakery_campaign",
