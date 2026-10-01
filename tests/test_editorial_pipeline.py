@@ -1332,11 +1332,55 @@ class PipelineTest(unittest.TestCase):
         with patch("guardamar_digest.llm._post", side_effect=responses) as post:
             self.assertEqual(classify(settings, "2026-07"), "gemini")
         self.assertEqual(post.call_count, 3)
+        repair_body = post.call_args_list[2].args[2]
+        repair_text = repair_body["contents"][0]["parts"][0]["text"]
+        self.assertIn("СТРУКТУРНЫЙ РЕМОНТ ОТВЕТА", repair_text)
+        self.assertIn("Никогда не пропускай id", repair_text)
         with connect(self.db) as con:
             row = con.execute(
                 "SELECT short_title,provider FROM entries WHERE period_key='2026-07'"
             ).fetchone()
         self.assertEqual(dict(row), {"short_title": "Маникюр", "provider": "gemini"})
+
+    def test_classification_never_treats_missing_entry_as_exclusion(self):
+        base = make_settings(self.db)
+        settings = Settings(
+            base.root, base.db_path, base.source_username, base.source_chat_id,
+            "", "", "gemini-key", "test-model", "", "test",
+            base.excluded_sender_ids,
+        )
+        with connect(self.db) as con:
+            message_id = add_message(
+                con, 40,
+                "Для краткосрочной аренды второй дом от моря. Гуардамар",
+            )
+        prefilter(settings, "2026-07")
+        dedupe(self.db, "2026-07")
+        with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)):
+            semantic_dedupe(settings, "2026-07")
+        category = (
+            '{"categories":[{"code":"housing","title":"Недвижимость",'
+            '"emoji":"🏠"}]}'
+        )
+        responses = [
+            {"candidates": [{"content": {"parts": [{"text": category}]}}]},
+            {"candidates": [{"content": {"parts": [{"text": '{"entries":[]}'}]}}]},
+            {"candidates": [{"content": {"parts": [{"text": '{"entries":[]}'}]}}]},
+        ]
+        with patch("guardamar_digest.llm._post", side_effect=responses):
+            with self.assertRaisesRegex(
+                RuntimeError, "incomplete model response: expected 1 entries, got 0"
+            ):
+                classify(settings, "2026-07")
+        with connect(self.db) as con:
+            row = con.execute(
+                """SELECT eligible,excluded_reason,classification_run_id
+                   FROM entries WHERE message_id=?""",
+                (message_id,),
+            ).fetchone()
+        self.assertEqual(row["eligible"], 1)
+        self.assertIsNone(row["excluded_reason"])
+        self.assertIsNone(row["classification_run_id"])
 
     def test_classification_repairs_only_invalid_completed_checkpoint(self):
         base = make_settings(self.db)
