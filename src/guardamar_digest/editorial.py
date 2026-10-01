@@ -332,8 +332,9 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
     elif intent == "job_seek":
         title = re.sub(r"^ищу\s+работу\s*", "", title, flags=re.I)
     elif intent == "trip_seek":
-        if re.search(r"\bпосылк\w*\b", lowered):
-            if re.search(r"\bукраин\w*\b", lowered) and re.search(r"\bиспани\w*\b", lowered):
+        trip_context = f"{source}\n{title}".casefold()
+        if re.search(r"\bпосылк\w*\b", trip_context):
+            if re.search(r"\bукраин\w*\b", trip_context) and re.search(r"\bиспани\w*\b", trip_context):
                 title = "Посылка из Украины в Испанию"
             else:
                 title = "Передача посылки"
