@@ -95,31 +95,31 @@ def _commercial_topics(text: str) -> set[str]:
     return {name for name, pattern in TOPIC_PATTERNS.items() if pattern.search(text)}
 
 
-SPANISH_SCHOOL_BASE = re.compile(r"\\b(?:испанск\\w*|іспанськ\\w*)\\b", re.I)
+SPANISH_SCHOOL_BASE = re.compile(r"\b(?:испанск\w*|іспанськ\w*)\b", re.I)
 SPANISH_SCHOOL_MARKERS = {
-    "online": re.compile(r"\\bонлайн\\b", re.I),
+    "online": re.compile(r"\bонлайн\b", re.I),
     "center": re.compile(
-        r"(?:українськ\\w*|україномовн\\w*|мовн\\w*)\\s+центр", re.I
+        r"(?:українськ\w*|україномовн\w*|мовн\w*)\s+центр", re.I
     ),
-    "lecture": re.compile(r"лекційн\\w*\\s+курс|лекционн\\w*\\s+курс", re.I),
-    "one_euro": re.compile(r"(?<!\\d)1\\s*(?:€|євро|евро)", re.I),
+    "lecture": re.compile(r"лекційн\w*\s+курс|лекционн\w*\s+курс", re.I),
+    "one_euro": re.compile(r"(?<!\d)1\s*(?:€|євро|евро)", re.I),
     "wed_fri_20": re.compile(
         r"(?:середа|среда).{0,80}(?:п.?ятниц|пятниц).{0,80}20[:.]?00",
         re.I | re.S,
     ),
-    "levels": re.compile(r"\\b[aа]0\\b.{0,80}\\b[cс][12]\\b", re.I | re.S),
-    "mini_group": re.compile(r"міні\\s*[- ]?\\s*груп", re.I),
-    "group": re.compile(r"\\bгруп\\w*", re.I),
+    "levels": re.compile(r"\b[aа]0\b.{0,80}\b[cс][12]\b", re.I | re.S),
+    "mini_group": re.compile(r"міні\s*[- ]?\s*груп", re.I),
+    "group": re.compile(r"\bгруп\w*", re.I),
     "individual": re.compile(r"індивідуал|индивидуал", re.I),
-    "price_356": re.compile(r"(?<!\\d)356\\s*(?:грн)?", re.I),
-    "price_407": re.compile(r"(?<!\\d)407\\s*(?:грн)?", re.I),
-    "price_459": re.compile(r"(?<!\\d)459\\s*(?:грн)?", re.I),
-    "price_520": re.compile(r"(?<!\\d)5[,.]20\\s*(?:€|євро|евро)?", re.I),
-    "discount_50": re.compile(r"50\\s*%", re.I),
-    "discount_30": re.compile(r"30\\s*%", re.I),
-    "pair": re.compile(r"\\bв\\s+пар[іе]\\b", re.I),
+    "price_356": re.compile(r"(?<!\d)356\s*(?:грн)?", re.I),
+    "price_407": re.compile(r"(?<!\d)407\s*(?:грн)?", re.I),
+    "price_459": re.compile(r"(?<!\d)459\s*(?:грн)?", re.I),
+    "price_520": re.compile(r"(?<!\d)5[,.]20\s*(?:€|євро|евро)?", re.I),
+    "discount_50": re.compile(r"50\s*%", re.I),
+    "discount_30": re.compile(r"30\s*%", re.I),
+    "pair": re.compile(r"\bв\s+пар[іе]\b", re.I),
     "free_trial": re.compile(
-        r"пробн\\w*.{0,30}(?:безкоштов|бесплат)", re.I | re.S
+        r"пробн\w*.{0,30}(?:безкоштов|бесплат)", re.I | re.S
     ),
     "modern_learning": re.compile(
         r"сучасн.{0,50}(?:платформ|матеріал)|"
@@ -128,7 +128,7 @@ SPANISH_SCHOOL_MARKERS = {
     ),
     "adaptation": re.compile(r"адапт", re.I),
     "conversation": re.compile(
-        r"розмов|спілкуван|мовн\\w*\\s+бар.?єр|языков\\w*\\s+барьер", re.I
+        r"розмов|спілкуван|мовн\w*\s+бар.?єр|языков\w*\s+барьер", re.I
     ),
     "certified": re.compile(r"сертифікован|сертифицирован", re.I),
     "english": re.compile(r"англійськ|английск", re.I),
