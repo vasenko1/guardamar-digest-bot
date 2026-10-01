@@ -72,6 +72,16 @@ JOB_OFFER = re.compile(
     r"ищу\s+нян\w*|требу(?:ется|ются)\s+нян\w*|работа\s*[!:.\n])",
     re.I,
 )
+JOB_CATEGORY_REPAIR_OFFER = re.compile(
+    r"\bваканси\w*\b|"
+    r"\b(?:ищем|в\s+поисках)\s+(?:ответственн\w+\s+)?"
+    r"(?:сотрудник|работник|працівник|робітник)\w*\b|"
+    r"\bработа\s*[!:.\n]|"
+    r"\b(?:сто|автосервис\w*)\b.{0,100}\bтребу(?:ется|ются)\b"
+    r".{0,140}\b(?:рихтовщик|кузовщик|сварщик|автомаляр|"
+    r"(?:авто)?подготовщик)\w*\b",
+    re.I | re.S,
+)
 TRIP = re.compile(
     r"\b(?:трансфер\w*|попутчик\w*|поездк\w*|еду|їхат\w*|аэропорт\w*|вокзал\w*)\b",
     re.I,
@@ -487,7 +497,7 @@ def normalize_period(settings, period: str) -> dict[str, int]:
             ).fetchall()
             if any(
                 JOB_SEEK.search(row["source_text"])
-                or JOB_OFFER.search(row["source_text"])
+                or JOB_CATEGORY_REPAIR_OFFER.search(row["source_text"])
                 for row in possible_jobs
             ):
                 used_codes = {item.get("code") for item in categories}
@@ -501,7 +511,10 @@ def normalize_period(settings, period: str) -> dict[str, int]:
                     "title": "Работа и вакансии",
                     "emoji": "💼",
                 }
-                categories.append(job_category)
+                if service_category and service_category in categories:
+                    categories.insert(categories.index(service_category), job_category)
+                else:
+                    categories.append(job_category)
                 con.execute(
                     "UPDATE classification_runs SET categories_json=? WHERE period_key=?",
                     (json.dumps(categories, ensure_ascii=False), period),
@@ -567,7 +580,7 @@ def normalize_period(settings, period: str) -> dict[str, int]:
                 and not re.search(r"работ|ваканси", category_title, re.I)
                 and (
                     JOB_SEEK.search(row["source_text"])
-                    or JOB_OFFER.search(row["source_text"])
+                    or JOB_CATEGORY_REPAIR_OFFER.search(row["source_text"])
                 )
             ):
                 category_code = job_category["code"]
