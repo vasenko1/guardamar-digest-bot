@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from .db import connect
 
 
-VERSION = "2026-08-03.1"
+VERSION = "2026-10-01.1"
 GENERIC_ONLY = re.compile(
     r"^(?:прода[её]тся|продам|торг|возможен торг|возможно торг|"
     r"актуально|срочно|подробности в личк[еу]|пишите в личк[еу])[\s.!?,…-]*$",
@@ -21,6 +21,20 @@ CONTACT_OR_PRICE = re.compile(
     re.I,
 )
 VAGUE_RENTAL = re.compile(r"\b(?:летн\w*|краткосрочн\w*)\s+аренд\w*\b", re.I)
+IMAGE_DEPENDENT_ONLY = re.compile(
+    r"^\s*(?:фото\s+от\s+\S+|"
+    r"продаю\s+за\s+\d+(?:\s*[-–]\s*\d+)*(?:\s*[.,])?.{0,90}"
+    r"ручн\w*\s+р[ао]бот\w*.{0,60})\s*$",
+    re.I,
+)
+
+
+def _source_channel_sender_id(source_chat_id: str) -> str | None:
+    """Telegram Desktop identifies posts sent as the source channel separately."""
+    value = (source_chat_id or "").strip()
+    if value.startswith("-100") and value[4:].isdigit():
+        return f"channel{value[4:]}"
+    return None
 RENTAL_SUBJECT = re.compile(
     r"\b(?:квартир\w*|жиль[еёя]|дом\w*|вилл\w*|бунгал\w*|комнат\w*|"
     r"студи\w*|апартамент\w*|авто\w*|машин\w*|яхт\w*)\b", re.I,
@@ -143,10 +157,20 @@ def prefilter(settings, period: str, as_of: str | None = None) -> dict[str, int]
             text = " ".join(row["source_text"].split())
             substance = " ".join(CONTACT_OR_PRICE.sub(" ", text).split())
             code = detail = ""
-            if row["sender_id"] in settings.excluded_sender_ids:
+            source_channel_sender = _source_channel_sender_id(
+                settings.source_chat_id
+            )
+            if (
+                row["sender_id"] in settings.excluded_sender_ids
+                or (
+                    source_channel_sender
+                    and row["sender_id"] == source_channel_sender
+                )
+            ):
                 code, detail = "author", f"sender_id={row['sender_id']}"
             elif (
                 GENERIC_ONLY.fullmatch(substance)
+                or IMAGE_DEPENDENT_ONLY.fullmatch(text)
                 or not SUBJECT_WORD.search(substance)
                 or (VAGUE_RENTAL.search(substance) and not RENTAL_SUBJECT.search(substance))
             ):
