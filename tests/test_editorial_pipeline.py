@@ -462,7 +462,7 @@ class PipelineTest(unittest.TestCase):
         dedupe(self.db, "2026-07")
         with patch("guardamar_digest.dedupe.discover_topics", return_value=(0, 0)), \
              patch("guardamar_digest.dedupe._ask_provider",
-                   side_effect=ValueError("provider unavailable")):
+                   side_effect=AssertionError("low-overlap pair must not call an LLM")):
             result = semantic_dedupe(settings, "2026-07")
         self.assertEqual(result["unresolved_pairs"], 0)
         with connect(self.db) as con:
