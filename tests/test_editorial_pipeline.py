@@ -2323,6 +2323,15 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(rows[message_id]["intent_code"], "other")
 
         self.assertEqual(rows[course]["short_title"], "Испанский язык онлайн")
+        self.assertEqual(
+            normalize_title(
+                "other",
+                "Обучение и курсы",
+                "Лекційний курс іспанської онлайн, середа та п'ятниця 20:00.",
+                "Курс испанского языка онлайн",
+            ),
+            "Испанский язык, 2 раза в неделю",
+        )
         self.assertEqual(rows[tutor]["short_title"], "Репетитор по испанскому языку")
         self.assertEqual(rows[chess]["short_title"], "Занятия по шахматам")
         self.assertEqual(rows[smm]["short_title"], "Обучение маркетингу и SMM для девушек")
