@@ -4,6 +4,7 @@ import json
 import random
 import re
 import time
+import unicodedata
 import hashlib
 import uuid
 from http.client import IncompleteRead
@@ -444,10 +445,10 @@ def _realestate_mode(source_text: str) -> str | None:
     ):
         return "rent_seek"
     if re.search(
-        r"\b(?:аренд\w*|оренд\w*)\b.{0,220}"
+        r"\b(?:аренд(?!атор)\w*|оренд(?!атор)\w*)\b.{0,220}"
         r"\b(?:квартир\w*|жиль[еёя]|бунгало|студи\w*|апартамент\w*|дом\w*)\b|"
         r"\b(?:квартир\w*|жиль[еёя]|бунгало|студи\w*|апартамент\w*|дом\w*)\b"
-        r".{0,220}\b(?:аренд\w*|оренд\w*)\b",
+        r".{0,220}\b(?:аренд(?!атор)\w*|оренд(?!атор)\w*)\b",
         source_text,
         re.I | re.S,
     ):
