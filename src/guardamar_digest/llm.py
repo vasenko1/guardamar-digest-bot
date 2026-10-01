@@ -25,7 +25,7 @@ MAX_RETRIES = 2
 # but keep the bound small so one entry cannot consume the daily quota.
 MODEL_RESPONSE_ATTEMPTS = 2
 LEGACY_CLASSIFIER_VERSION = "2026-07-31.2"
-CLASSIFIER_VERSION = "2026-08-03.1"
+CLASSIFIER_VERSION = "2026-10-01.1"
 CATEGORY_CODE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 RUSSIAN_TEXT = re.compile(r"[а-яё]", re.I)
 UKRAINIAN_ONLY = re.compile(r"[іїєґ]", re.I)
@@ -693,6 +693,31 @@ Title — компактная витринная строка, обычно 18�
 """ + ("Используй ТОЛЬКО этот план категорий: " + json.dumps(categories, ensure_ascii=False) + "\n" if categories else "") + "Данные:\n" + json.dumps(model_rows, ensure_ascii=False, separators=(",", ":"))
 
 
+def repair_prompt(row: dict, categories: list[dict]) -> str:
+    """Force a structurally complete decision for one item after a bad response."""
+    model_row = {"id": row["id"], "text": row["text"]}
+    return """СТРУКТУРНЫЙ РЕМОНТ ОТВЕТА. Предыдущий ответ модели был неполным.
+Верни ТОЛЬКО JSON ровно такой формы:
+{"entries":[{"id":1,"include":true,"category":"разрешённый_code","title":"...","confidence":"high|low"}]}.
+
+ОБЯЗАТЕЛЬНО верни ровно один объект для переданного id. Никогда не пропускай id и
+никогда не возвращай пустой entries. Если сообщение не является самостоятельным
+объявлением, всё равно верни объект с include=false, разрешённой category и кратким
+title. Краткость сообщения, отсутствие цены, телефона или подробностей сами по себе
+НЕ являются причиной исключения: конкретное предложение или запрос остаётся
+include=true.
+
+Используй только разрешённые категории. Title всегда на русском, максимум 60 символов,
+без цены, контактов, URL и рекламных эпитетов. Не меняй направление запроса/предложения.
+Для аренды жилья сохраняй объект, число спален/комнат и срок; Гуардамар в title не нужен,
+другой город нужен.
+
+Разрешённые категории: """ + json.dumps(categories, ensure_ascii=False) + (
+        "\nЕдинственный объект:\n"
+        + json.dumps(model_row, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
 def plan_prompt(rows: list[dict]) -> str:
     return """Верни ТОЛЬКО JSON:
 {\"categories\":[{\"code\":\"ascii_code\",\"title\":\"Русское название\",\"emoji\":\"...\"}]}.
@@ -969,10 +994,15 @@ def classify(settings: Settings, period: str) -> str:
       batch = rows[offset:offset + 1]
       if batch[0]["id"] in done: continue
       errors = []
+      repair_mode = False
       providers = ("gemini", "openrouter") * MODEL_RESPONSE_ATTEMPTS
       for provider in providers:
         try:
-            content = prompt(batch, fixed_categories)
+            content = (
+                repair_prompt(batch[0], fixed_categories)
+                if repair_mode
+                else prompt(batch, fixed_categories)
+            )
             if provider == "gemini" and settings.gemini_key:
                 raw = _post(f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent?key={settings.gemini_key}", {"Content-Type":"application/json"}, {"contents":[{"parts":[{"text":content}]}], "generationConfig":{"responseMimeType":"application/json", "maxOutputTokens":2048}})
                 result = _json(raw["candidates"][0]["content"]["parts"][0]["text"])
@@ -1016,7 +1046,13 @@ def classify(settings: Settings, period: str) -> str:
             provider_used.append(provider); break
         except HTTPError as exc:
             errors.append(f"{provider}: HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:800]}")
-        except (IncompleteRead, JSONDecodeError, KeyError, ValueError, URLError, TimeoutError, OSError) as exc:
+        except (JSONDecodeError, KeyError, ValueError) as exc:
+            # A transport-successful but structurally/semantically invalid
+            # response should not be retried with the identical prompt. Force
+            # an explicit one-item decision on the next available provider.
+            repair_mode = True
+            errors.append(f"{provider}: {exc}")
+        except (IncompleteRead, URLError, TimeoutError, OSError) as exc:
             errors.append(f"{provider}: {exc}")
       else:
         external_id = external_ids.get(batch[0]["id"], batch[0]["id"])
