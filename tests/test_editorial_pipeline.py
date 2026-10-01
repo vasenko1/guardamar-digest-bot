@@ -2009,6 +2009,8 @@ class PipelineTest(unittest.TestCase):
         )
 
     def test_transport_request_gets_own_subsection(self):
+        from guardamar_digest.render import _intent_subsection
+
         self.assertEqual(
             _intent_subsection(
                 "Транспорт и перевозки",
