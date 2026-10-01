@@ -64,9 +64,10 @@ Rare linking markers include the 1 € lecture course, Wednesday/Friday 20:00 sc
 356–459 UAH mini-group pricing, 50%/30% format discounts, A0–C1/C2 levels,
 modern-learning/platform language, free trial and repeated course-format catalogues.
 
-From dedupe version 2026-10-01.2:
+From dedupe version 2026-10-01.3:
 - different course formats from the same evidenced school account collapse to one school campaign;
-- cross-account school ads collapse only when they share strong rare campaign markers;
+- cross-account school ads collapse only when they share strong rare campaign markers or the preserved proven historical campaign fingerprint;
+- generic combinations such as individual + mini-group + group are not enough across accounts;
 - generic Spanish wording alone is insufficient;
 - individual tutors (for example ads explicitly describing the author as a `репетитор`) are excluded from the school fingerprint;
 - unrelated Spanish schools remain separate unless the strong campaign fingerprint is satisfied.
