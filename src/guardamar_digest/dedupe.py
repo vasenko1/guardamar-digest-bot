@@ -12,7 +12,7 @@ from .db import connect
 from .llm import _json, _post
 
 
-VERSION = "2026-10-01.2"
+VERSION = "2026-10-01.3"
 _blocked_providers: set[str] = set()
 
 
@@ -180,8 +180,6 @@ def _same_cross_author_spanish_campaign(left: str, right: str) -> bool:
         return True
     if {"mini_group", "price_520"} <= common:
         return True
-    if {"mini_group", "pair", "group", "individual"} <= common:
-        return True
     legacy_signature = {
         "levels", "adaptation", "mini_group", "modern_learning",
         "conversation", "audience", "price_520",
@@ -190,16 +188,9 @@ def _same_cross_author_spanish_campaign(left: str, right: str) -> bool:
         common & {"adaptation", "price_520"}
     ):
         return True
-    signature = {
-        "center", "levels", "mini_group", "group", "individual", "free_trial",
-        "modern_learning", "adaptation", "conversation", "certified", "english",
-        "teacher", "pair", "audience",
-    }
-    shared = common & signature
-    return len(shared) >= 4 and bool(
-        shared & {"center", "levels", "modern_learning", "adaptation",
-                  "certified", "teacher"}
-    )
+    if {"certified", "levels", "mini_group", "individual", "teacher"} <= common:
+        return True
+    return False
 
 
 def _row_value(row: object, key: str) -> object:
