@@ -36,7 +36,8 @@ From dedupe version 2026-10-01.1:
 - cross-author Ukrainian Spanish-campaign fingerprint remains a narrow hard rule;
 - exact same-author duplicates remain deterministic;
 - semantic candidate pairs use high-confidence provider decisions when available;
-- if providers fail, low-similarity same-topic pairs fall back conservatively to DIFFERENT;
+- very low-overlap broad-topic pairs resolve directly to DIFFERENT without an LLM call;
+- remaining ambiguous pairs may use providers; if providers fail, deterministic arbitration remains conservative;
 - sufficiently high textual/containment overlap can still deduplicate without an LLM.
 
 ## Regression coverage
