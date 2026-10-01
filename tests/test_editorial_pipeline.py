@@ -1192,6 +1192,15 @@ class PipelineTest(unittest.TestCase):
         )
         self.assertTrue(changed)
         self.assertEqual(separated[-1]["title"], "Цветы и букеты")
+        split, changed = _ensure_editorial_categories(
+            [{"code": "food_flowers", "title": "Еда и цветы", "emoji": "🍰🌸"}],
+            [{"text": "Домашние торты"}, {"text": "Доставка букетов"}],
+        )
+        self.assertTrue(changed)
+        self.assertEqual(
+            [item["title"] for item in split],
+            ["Еда и продукты", "Цветы и букеты"],
+        )
 
     def test_training_recruitment_is_not_forced_into_seek_title(self):
         source = (
