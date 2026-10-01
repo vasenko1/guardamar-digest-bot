@@ -12,7 +12,7 @@ from .db import connect
 from .llm import _json, _post
 
 
-VERSION = "2026-10-01.1"
+VERSION = "2026-10-01.2"
 _blocked_providers: set[str] = set()
 
 
@@ -95,37 +95,112 @@ def _commercial_topics(text: str) -> set[str]:
     return {name for name, pattern in TOPIC_PATTERNS.items() if pattern.search(text)}
 
 
-SPANISH_CAMPAIGN_BASE = re.compile(
-    r"(?:🇪🇸|🇪🇦).{0,80}іспанськ|"
-    r"іспанськ.{0,80}(?:🇪🇸|🇪🇦)",
-    re.I | re.S,
-)
-SPANISH_CAMPAIGN_MARKERS = {
-    "levels": re.compile(r"\b[aaа]0\b.*\b[cс][12]\b", re.I | re.S),
-    "adaptation": re.compile(r"адапт(?:ац|уват)", re.I),
-    "mini_group": re.compile(r"міні\s*[- ]?\s*груп", re.I),
-    "modern_learning": re.compile(r"сучасн.{0,35}(?:платформ|матеріал)", re.I | re.S),
-    "conversation": re.compile(r"розмов|спілкуван", re.I),
-    "audience": re.compile(r"діт.{0,80}доросл|доросл.{0,80}діт", re.I | re.S),
-    "price_520": re.compile(r"(?<!\d)5[,.]20\s*(?:€|євро)?", re.I),
+SPANISH_SCHOOL_BASE = re.compile(r"\\b(?:испанск\\w*|іспанськ\\w*)\\b", re.I)
+SPANISH_SCHOOL_MARKERS = {
+    "online": re.compile(r"\\bонлайн\\b", re.I),
+    "center": re.compile(
+        r"(?:українськ\\w*|україномовн\\w*|мовн\\w*)\\s+центр", re.I
+    ),
+    "lecture": re.compile(r"лекційн\\w*\\s+курс|лекционн\\w*\\s+курс", re.I),
+    "one_euro": re.compile(r"(?<!\\d)1\\s*(?:€|євро|евро)", re.I),
+    "wed_fri_20": re.compile(
+        r"(?:середа|среда).{0,80}(?:п.?ятниц|пятниц).{0,80}20[:.]?00",
+        re.I | re.S,
+    ),
+    "levels": re.compile(r"\\b[aа]0\\b.{0,80}\\b[cс][12]\\b", re.I | re.S),
+    "mini_group": re.compile(r"міні\\s*[- ]?\\s*груп", re.I),
+    "group": re.compile(r"\\bгруп\\w*", re.I),
+    "individual": re.compile(r"індивідуал|индивидуал", re.I),
+    "price_356": re.compile(r"(?<!\\d)356\\s*(?:грн)?", re.I),
+    "price_407": re.compile(r"(?<!\\d)407\\s*(?:грн)?", re.I),
+    "price_459": re.compile(r"(?<!\\d)459\\s*(?:грн)?", re.I),
+    "price_520": re.compile(r"(?<!\\d)5[,.]20\\s*(?:€|євро|евро)?", re.I),
+    "discount_50": re.compile(r"50\\s*%", re.I),
+    "discount_30": re.compile(r"30\\s*%", re.I),
+    "pair": re.compile(r"\\bв\\s+пар[іе]\\b", re.I),
+    "free_trial": re.compile(
+        r"пробн\\w*.{0,30}(?:безкоштов|бесплат)", re.I | re.S
+    ),
+    "modern_learning": re.compile(
+        r"сучасн.{0,50}(?:платформ|матеріал)|"
+        r"современн.{0,50}(?:платформ|материал)",
+        re.I | re.S,
+    ),
+    "adaptation": re.compile(r"адапт", re.I),
+    "conversation": re.compile(
+        r"розмов|спілкуван|мовн\\w*\\s+бар.?єр|языков\\w*\\s+барьер", re.I
+    ),
+    "certified": re.compile(r"сертифікован|сертифицирован", re.I),
+    "english": re.compile(r"англійськ|английск", re.I),
+    "children": re.compile(r"діт|дет", re.I),
+    "adult": re.compile(r"доросл|взросл", re.I),
+    "teacher": re.compile(r"викладач|преподавател", re.I),
+}
+SPANISH_SCHOOL_SIGNALS = {
+    "center", "lecture", "levels", "mini_group", "group", "individual",
+    "free_trial", "modern_learning", "adaptation", "certified", "teacher", "pair",
 }
 
 
 def _spanish_campaign_features(text: str) -> set[str]:
-    """Fingerprint one known Ukrainian Spanish-course advertising campaign."""
+    """Fingerprint the evidenced multi-account Ukrainian Spanish school."""
     folded = unicodedata.normalize("NFKC", text).casefold()
-    if not SPANISH_CAMPAIGN_BASE.search(folded) or "онлайн" not in folded:
+    if not SPANISH_SCHOOL_BASE.search(folded):
         return set()
-    return {
-        name for name, pattern in SPANISH_CAMPAIGN_MARKERS.items()
+    # Individual tutors are a separate offer even though they teach Spanish.
+    if re.search(r"\\bрепетитор", folded, re.I):
+        return set()
+    features = {
+        name for name, pattern in SPANISH_SCHOOL_MARKERS.items()
         if pattern.search(folded)
     }
+    if len(features & SPANISH_SCHOOL_SIGNALS) < 2:
+        return set()
+    if {"discount_50", "discount_30"} <= features:
+        features.add("discount_bundle")
+    if {"price_356", "price_459"} <= features:
+        features.add("price_356_459")
+    if {"children", "adult"} <= features:
+        features.add("audience")
+    return features
 
 
 def _same_cross_author_spanish_campaign(left: str, right: str) -> bool:
-    """Match only the evidenced multi-account campaign, not Spanish ads broadly."""
+    """Match the evidenced school across accounts without merging generic tutors."""
     common = _spanish_campaign_features(left) & _spanish_campaign_features(right)
-    return len(common) >= 3 and bool(common & {"adaptation", "price_520"})
+    if not common:
+        return False
+    if {"lecture", "one_euro"} <= common:
+        return True
+    if "price_356_459" in common or "discount_bundle" in common:
+        return True
+    if {"mini_group", "price_459", "free_trial"} <= common:
+        return True
+    if {"mini_group", "price_407"} <= common:
+        return True
+    if {"mini_group", "price_520"} <= common:
+        return True
+    if {"mini_group", "pair", "group", "individual"} <= common:
+        return True
+    signature = {
+        "center", "levels", "mini_group", "group", "individual", "free_trial",
+        "modern_learning", "adaptation", "conversation", "certified", "english",
+        "teacher", "pair", "audience",
+    }
+    shared = common & signature
+    return len(shared) >= 4 and bool(
+        shared & {"center", "levels", "modern_learning", "adaptation",
+                  "certified", "teacher"}
+    )
+
+
+def _row_value(row: object, key: str) -> object | None:
+    if isinstance(row, dict):
+        return row.get(key)
+    try:
+        return row[key] if key in row.keys() else None
+    except (AttributeError, KeyError, TypeError):
+        return None
 
 
 def _canonical(rows: list) -> object:
@@ -317,8 +392,10 @@ def _review_pairs(db_path, period: str) -> list[tuple[object, object]]:
     with connect(db_path) as con:
         rows = con.execute(
             """SELECT l.id AS left_id, l.message_id AS left_external_id, l.published_at AS left_published_at,
-                      l.source_text AS left_text, r.id AS right_id, r.message_id AS right_external_id,
-                      r.published_at AS right_published_at, r.source_text AS right_text
+                      l.sender_id AS left_sender_id, l.source_text AS left_text,
+                      r.id AS right_id, r.message_id AS right_external_id,
+                      r.published_at AS right_published_at, r.sender_id AS right_sender_id,
+                      r.source_text AS right_text
                FROM duplicate_reviews d
                JOIN messages l ON l.id=d.left_message_id JOIN messages r ON r.id=d.right_message_id
                JOIN entries le ON le.message_id=l.id JOIN entries re ON re.message_id=r.id
@@ -328,8 +405,12 @@ def _review_pairs(db_path, period: str) -> list[tuple[object, object]]:
             (period,),
         ).fetchall()
     return [
-        ({"id": row["left_id"], "message_id": row["left_external_id"], "published_at": row["left_published_at"], "source_text": row["left_text"]},
-         {"id": row["right_id"], "message_id": row["right_external_id"], "published_at": row["right_published_at"], "source_text": row["right_text"]})
+        ({"id": row["left_id"], "message_id": row["left_external_id"],
+          "published_at": row["left_published_at"], "sender_id": row["left_sender_id"],
+          "source_text": row["left_text"]},
+         {"id": row["right_id"], "message_id": row["right_external_id"],
+          "published_at": row["right_published_at"], "sender_id": row["right_sender_id"],
+          "source_text": row["right_text"]})
         for row in rows
     ]
 
@@ -418,8 +499,14 @@ def _deterministic_arbitration(left: object, right: object) -> tuple[str, str, s
     intent_a, intent_b = _intent(a), _intent(b)
     if {intent_a, intent_b} == {"offer", "search"}:
         return "different", "intent_conflict", "high"
+    school_a = _spanish_campaign_features(a)
+    school_b = _spanish_campaign_features(b)
+    sender_a = _row_value(left, "sender_id")
+    sender_b = _row_value(right, "sender_id")
+    if school_a and school_b and sender_a and sender_a == sender_b:
+        return "same", "same_author_spanish_school_campaign", "high"
     if _same_cross_author_spanish_campaign(a, b):
-        return "same", "cross_author_spanish_campaign", "high"
+        return "same", "cross_author_spanish_school_campaign", "high"
     cars_a = {tuple(value.casefold() for value in match) for match in CAR_IDENTITY.findall(a)}
     cars_b = {tuple(value.casefold() for value in match) for match in CAR_IDENTITY.findall(b)}
     if cars_a and cars_b and cars_a.isdisjoint(cars_b):
@@ -660,7 +747,8 @@ def semantic_dedupe(settings, period: str) -> dict[str, int | str]:
         hard_rule = rule_reason in {
             "intent_conflict", "explicit_date_conflict", "explicit_route_conflict",
             "explicit_vehicle_conflict", "explicit_bedroom_conflict",
-            "cross_author_spanish_campaign",
+            "same_author_spanish_school_campaign",
+            "cross_author_spanish_school_campaign",
         }
         if hard_rule:
             final_status, final_reason = rule_status, rule_reason
@@ -836,7 +924,7 @@ def _rebuild_semantic_duplicates(con, period: str) -> None:
         texts = {
             row["id"]: row
             for row in con.execute(
-                """SELECT id,message_id,published_at,source_text FROM messages
+                """SELECT id,message_id,published_at,sender_id,source_text FROM messages
                    WHERE id IN (%s)""" % ",".join("?" for _ in pair_ids),
                 tuple(pair_ids),
             )
