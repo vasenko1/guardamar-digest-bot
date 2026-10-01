@@ -427,6 +427,19 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
             )
     title = re.sub(r"\s+", " ", title)
     title = re.sub(r"\s+([,;:])", r"\1", title)
+    local_delivery_coverage = bool(
+        LOCAL_CITY.search(source)
+        and re.search(r"достав\w*", source, re.I)
+        and re.search(r"ед[аы]|подар|цвет|букет", category, re.I)
+    )
+    if local_delivery_coverage:
+        for display, _aliases in OTHER_LOCATION_ALIASES:
+            title = re.sub(
+                rf"(?:,\s*|\s+в\s+|\s+из\s+){re.escape(display)}\s*$",
+                "",
+                title,
+                flags=re.I,
+            ).strip(" ,")
     # Split only editorial comma separators. A decimal comma in "1,5 года"
     # must remain untouched.
     segments = [segment.strip() for segment in re.split(r",\s+", title)]
@@ -441,11 +454,6 @@ def normalize_title(intent: str, category: str, source: str, existing: str) -> s
     title = title.strip(" ,;:–—-")
     if title and re.match(r"[а-яё]", title):
         title = title[0].upper() + title[1:]
-    local_delivery_coverage = bool(
-        LOCAL_CITY.search(source)
-        and re.search(r"достав\w*", source, re.I)
-        and re.search(r"ед[аы]|подар|цвет|букет", category, re.I)
-    )
     append_outside_location = bool(
         original_location
         and not local_delivery_coverage
