@@ -203,7 +203,7 @@ def service_title(source: str, existing: str) -> str:
     if re.search(r"\bбилет\w*\b", source, re.I) and re.search(
         r"\b(?:бенидорм\w*|terra\s+m[ií]tica|aqualandia|mundomar)\b", source, re.I
     ):
-        return "Билеты в парки Бенидорма"
+        return "Билеты в парки, Бенидорм"
     if re.search(r"\bвоздуховод\w*\b", source, re.I) and re.search(
         r"\b(?:чистк\w*|изготовлен\w*)\b", source, re.I
     ):
