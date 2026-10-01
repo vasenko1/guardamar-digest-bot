@@ -95,9 +95,20 @@ ALICANTE_PROVINCE_CONTEXT = re.compile(
 
 def _outside_location_names(text: str) -> list[str]:
     folded = unicodedata.normalize("NFKC", text).casefold()
+    specific_other_city = any(
+        display != "Аликанте" and any(alias in folded for alias in aliases)
+        for display, aliases in OTHER_LOCATION_ALIASES
+    )
+    alicante_is_regional = bool(
+        ALICANTE_PROVINCE_CONTEXT.search(folded)
+        or (
+            specific_other_city
+            and re.search(r"(?:#alicante\b|#аликанте\b)", folded)
+        )
+    )
     names = []
     for display, aliases in OTHER_LOCATION_ALIASES:
-        if display == "Аликанте" and ALICANTE_PROVINCE_CONTEXT.search(folded):
+        if display == "Аликанте" and alicante_is_regional:
             continue
         if any(alias in folded for alias in aliases):
             names.append(display)
