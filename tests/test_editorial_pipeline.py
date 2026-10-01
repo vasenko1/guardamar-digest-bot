@@ -452,11 +452,13 @@ class PipelineTest(unittest.TestCase):
         with connect(self.db) as con:
             add_message(
                 con, 55,
-                "Обучу маркетингу и SMM с нуля, помогу найти первые заказы",
+                "Обучу девушку маркетингу и SMM с нуля. "
+                "Помогу найти первые заказы и клиентов.",
             )
             add_message(
                 con, 56,
-                "Создаю сайты WordPress и веду Instagram для бизнеса, Reels и таргет",
+                "Создаю сайты WordPress. Монтаж видео, сценарии Reels, "
+                "таргет и оформление Instagram.",
                 published="2026-07-20T10:00:00",
             )
         dedupe(self.db, "2026-07")
