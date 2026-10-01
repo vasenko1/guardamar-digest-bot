@@ -2240,6 +2240,228 @@ class PipelineTest(unittest.TestCase):
             "Кондиционеры и холодильное оборудование",
         )
 
+    def test_september_normalization_creates_missing_education_category(self):
+        settings = make_settings(self.db)
+        with connect(self.db) as con:
+            course = add_message(
+                con, 150,
+                "Україномовний центр запрошує на курси іспанської мови онлайн.",
+                "school",
+            )
+            tutor = add_message(
+                con, 151,
+                "Я репетитор по испанскому языку, носитель языка.",
+                "tutor",
+            )
+            chess = add_message(
+                con, 152,
+                "Я преподаватель по шахматам. Провожу индивидуальные занятия для детей.",
+                "coach",
+            )
+            smm = add_message(
+                con, 153,
+                "Обучу девушку маркетингу и SMM с нуля. Ищу девушку, которую готова обучить.",
+                "trainer",
+            )
+            ordinary_service = add_message(
+                con, 154,
+                "Предлагаю ремонт и настройку кондиционеров.",
+                "hvac",
+            )
+            for message_id, title in (
+                (course, "Курсы испанского языка онлайн"),
+                (tutor, "Репетитор по испанскому языку"),
+                (chess, "Обучение игре в шахматы для детей"),
+                (smm, "Обучение маркетингу и SMM для девушек"),
+                (ordinary_service, "Кондиционеры и холодильное оборудование"),
+            ):
+                con.execute(
+                    """UPDATE entries SET eligible=1,category_code='services',
+                       category_title='Услуги и ремонт',category_emoji='🔧',
+                       short_title=?,classification_run_id='run'
+                       WHERE message_id=?""",
+                    (title, message_id),
+                )
+            con.execute(
+                """INSERT INTO classification_runs
+                   (period_key,run_id,input_signature,categories_json,status)
+                   VALUES ('2026-07','run','sig',?,'complete')""",
+                (json.dumps([
+                    {"code": "jobs", "title": "Работа и вакансии", "emoji": "💼"},
+                    {"code": "services", "title": "Услуги и ремонт", "emoji": "🔧"},
+                    {"code": "transport", "title": "Транспорт и поездки", "emoji": "🚖"},
+                ], ensure_ascii=False),),
+            )
+
+        result = normalize_period(settings, "2026-07")
+        self.assertGreaterEqual(result["category_repairs"], 4)
+
+        with connect(self.db) as con:
+            plan = json.loads(con.execute(
+                "SELECT categories_json FROM classification_runs WHERE period_key='2026-07'"
+            ).fetchone()["categories_json"])
+            rows = {
+                row["message_id"]: row
+                for row in con.execute(
+                    """SELECT message_id,category_title,short_title,intent_code
+                       FROM entries WHERE message_id IN (?,?,?,?,?)""",
+                    (course, tutor, chess, smm, ordinary_service),
+                )
+            }
+
+        self.assertEqual(
+            [item["title"] for item in plan],
+            [
+                "Работа и вакансии",
+                "Услуги и ремонт",
+                "Обучение и курсы",
+                "Транспорт и поездки",
+            ],
+        )
+        for message_id in (course, tutor, chess, smm):
+            self.assertEqual(rows[message_id]["category_title"], "Обучение и курсы")
+            self.assertEqual(rows[message_id]["intent_code"], "other")
+
+        self.assertEqual(rows[course]["short_title"], "Испанский язык онлайн")
+        self.assertEqual(rows[tutor]["short_title"], "Репетитор по испанскому языку")
+        self.assertEqual(rows[chess]["short_title"], "Занятия по шахматам")
+        self.assertEqual(rows[smm]["short_title"], "Обучение маркетингу и SMM для девушек")
+        self.assertEqual(rows[ordinary_service]["category_title"], "Услуги и ремонт")
+
+    def test_september_final_v5_intent_and_display_repairs(self):
+        ua_job = (
+            "Доброго дня. Потрібні універсали на будівництво та реформи. "
+            "Працюєм Аліканте, Торевєха."
+        )
+        self.assertEqual(
+            infer_intent("Работа и вакансии", ua_job),
+            "job_offer",
+        )
+        self.assertEqual(
+            normalize_title(
+                "job_offer",
+                "Работа и вакансии",
+                ua_job,
+                "Универсалы на строительство, Аликанте",
+            ),
+            "Строители-универсалы, Аликанте",
+        )
+
+        giveaway = "Отдам диван и кресло в удовлетворительном состоянии."
+        self.assertEqual(
+            infer_intent("Товары и вещи", giveaway),
+            "giveaway",
+        )
+        self.assertEqual(
+            normalize_title("giveaway", "Товары и вещи", giveaway, "Диван и кресло"),
+            "Диван и кресло",
+        )
+
+        medicine = "Продам Етацизин (срок 12/26) 3 евро/блистер"
+        self.assertEqual(
+            infer_intent("Красота и здоровье", medicine),
+            "sale_offer",
+        )
+        self.assertEqual(
+            normalize_title(
+                "sale_offer",
+                "Красота и здоровье",
+                medicine,
+                "Продам препарат Етацизин",
+            ),
+            "Етацизин",
+        )
+
+        ducts = (
+            "Профессиональная чистка и изготовление воздуховодов для систем "
+            "кондиционирования. Чистка каналов и изготовление воздуховодов."
+        )
+        self.assertEqual(
+            normalize_title(
+                "service_offer",
+                "Услуги и ремонт",
+                ducts,
+                "Кондиционеры и холодильное оборудование",
+            ),
+            "Чистка и изготовление воздуховодов",
+        )
+
+        ua_transfer = (
+            "Якщо Вам треба переміщення в аеропорт та інші локації, "
+            "автобус шість місць."
+        )
+        self.assertEqual(
+            infer_intent("Транспорт и поездки", ua_transfer),
+            "trip_offer",
+        )
+
+        print_shop = (
+            "Мы современный печатный бизнес в Торревьехе. "
+            "Графический дизайн, широкоформатная печать, наружная реклама и вывески."
+        )
+        self.assertEqual(
+            normalize_title(
+                "service_offer",
+                "Услуги и ремонт",
+                print_shop,
+                "Графический дизайн и наружная реклама в Торревьеха",
+            ),
+            "Графический дизайн и наружная реклама, Торревьеха",
+        )
+
+        grooming = "Груминг в Санта-Поле. Стрижка, купание и сушка."
+        self.assertEqual(
+            normalize_title(
+                "service_offer",
+                "Услуги и ремонт",
+                grooming,
+                "Груминг в Санта-Пола",
+            ),
+            "Груминг, Санта-Пола",
+        )
+
+        broad_transfer = (
+            "Трансфер. Аэропорты Alicante-Elche, Valencia, Murcia, Madrid. "
+            "Поездки между городами."
+        )
+        self.assertEqual(
+            normalize_title(
+                "trip_offer",
+                "Транспорт и поездки",
+                broad_transfer,
+                "Трансфер в Аликанте, Валенсия, Мурсии и Мадриде",
+            ),
+            "Трансфер в аэропорты и между городами",
+        )
+
+        spain_transfer = (
+            "Трансфер Torrevieja — по всій Іспанії, 24/7. "
+            "Аеропорт Аліканте, Мурсія, Валенсія."
+        )
+        self.assertEqual(
+            normalize_title(
+                "trip_offer",
+                "Транспорт и поездки",
+                spain_transfer,
+                "Трансфер из Торревьеха по всей Испании",
+            ),
+            "Трансфер по Испании, Торревьеха",
+        )
+
+        local_delivery = (
+            "Приготовим зефир ручной работы. Бесплатная доставка "
+            "в Гуардамаре и Торревьехе."
+        )
+        self.assertEqual(
+            normalize_title(
+                "other",
+                "Еда и подарки",
+                local_delivery,
+                "Ручной зефир с доставкой в Торревьеха",
+            ),
+            "Ручной зефир с доставкой",
+        )
+
     def test_september_naturopath_title_does_not_become_car_salon_cleaning(self):
         source = (
             "Я практикующий натуропат, травник. Воздействие на бактериальную флору. "
