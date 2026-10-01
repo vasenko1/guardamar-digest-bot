@@ -120,6 +120,20 @@ TITLE_SEEK = re.compile(
     r"\b(?:ищу|ищем|ищет|сниму|куплю|нужен|нужна|нужны|требуется|поиск|ваканси\w*)\b",
     re.I,
 )
+TRAINING_RECRUITMENT_OFFER = re.compile(
+    r"\bищу\s+(?:девушк\w*|парн\w*|человек\w*|учениц\w*|ученик\w*|"
+    r"студент\w*|кандидат\w*)\b[^.!?\n]{0,100}\bкотор\w*\b"
+    r"[^.!?\n]{0,100}\b(?:готов\w*\s+)?обуч\w*\b",
+    re.I,
+)
+
+
+def _source_requires_seek_title(source_text: str) -> bool:
+    """Protect real requests while allowing a teacher/recruiter to seek a trainee."""
+    return bool(
+        SOURCE_SEEK.search(source_text)
+        and not TRAINING_RECRUITMENT_OFFER.search(source_text)
+    )
 FOOD = re.compile(
     r"\b(?:торт\w*|пирожн\w*|капкейк\w*|пряник\w*|выпечк\w*|"
     r"ед[аы]|десерт\w*)\b",
@@ -297,7 +311,8 @@ def _validate_showcase_title(
         )
     if (
         source_text and not intent_in_category
-        and SOURCE_SEEK.search(source_text) and not TITLE_SEEK.search(title)
+        and _source_requires_seek_title(source_text)
+        and not TITLE_SEEK.search(title)
     ):
         raise ValueError("model response changed a request into an offer")
     bedroom_count = _bedroom_count(source_text)
